@@ -58,7 +58,19 @@ function sanitizeSheetForFirestore(sheet: CharacterSheet): CharacterSheet {
 }
 
 export async function signInWithGoogleAccount(): Promise<User> {
-  const cred = await signInWithPopup(auth, googleProvider);
+  let cred;
+  try {
+    cred = await signInWithPopup(auth, googleProvider);
+  } catch (err: unknown) {
+    const code = (err as { code?: string })?.code || '';
+    if (code === 'auth/unauthorized-domain' && typeof window !== 'undefined') {
+      const host = window.location.hostname;
+      throw new Error(
+        `Dominio "${host}" ainda nao esta autorizado no Firebase Auth. Adicione "${host}" em Firebase Console > Authentication > Settings > Authorized domains (projeto gen-lang-client-0687717722).`
+      );
+    }
+    throw err;
+  }
   const user = cred.user;
   const userPath = `users/${user.uid}`;
   try {

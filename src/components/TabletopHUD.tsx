@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
+import type * as THREE from 'three';
 import { User } from 'firebase/auth';
 import {
   Box,
@@ -83,6 +84,7 @@ import {
   extractYouTubeVideoId,
 } from '../utils/youtubeMusic';
 import { YouTubeSyncPlayer } from './YouTubeSyncPlayer';
+import { ModelPreview3D } from './ModelPreview3D';
 import {
   HERO_SHEET_TEMPLATES,
   MONSTER_SHEET_TEMPLATES,
@@ -280,13 +282,20 @@ export const TabletopHUD: React.FC<TabletopHUDProps> = ({
   const [gmTab, setGmTab] = useState<'map' | 'minis' | 'scale' | 'sheets' | 'annotations' | 'music' | 'players'>('map');
   const [assetSourceView, setAssetSourceView] = useState<'catalog' | 'import'>('catalog');
   const [catalogFilter, setCatalogFilter] = useState<'all' | CatalogCategory>('all');
+  const [previewCatalogId, setPreviewCatalogId] = useState<string>('stl-red-dragon');
+  const [previewFinish, setPreviewFinish] = useState<MiniFinish>('stone');
   const [showSources, setShowSources] = useState(false);
   const [copiedLink, setCopiedLink] = useState(false);
 
   // Monster & Hero-for-Player sheet creator state (GM)
   const [newMonsterTplId, setNewMonsterTplId] = useState<string>(MONSTER_SHEET_TEMPLATES[0].id);
+  const [newMonsterAssetId, setNewMonsterAssetId] = useState<string>(
+    MONSTER_SHEET_TEMPLATES[0].catalogAssetId || 'stl-goblin'
+  );
+  const [newMonsterFinish, setNewMonsterFinish] = useState<MiniFinish>('stone');
   const [newMonsterName, setNewMonsterName] = useState('');
   const [newMonsterTazoFile, setNewMonsterTazoFile] = useState<File | null>(null);
+  const [newMonsterTazoPreview, setNewMonsterTazoPreview] = useState<string | null>(null);
   const [creatingMonsterTazo, setCreatingMonsterTazo] = useState(false);
   const monsterTazoInputRef = useRef<HTMLInputElement | null>(null);
 
@@ -561,49 +570,75 @@ export const TabletopHUD: React.FC<TabletopHUDProps> = ({
     });
   };
 
-  const handleConfirmImport = async () => {
+  const uploadImportDraftAssetIfNeeded = async (): Promise<{
+    assetId: string;
+    assetName: string;
+  }> => {
+    if (!importDraft) {
+      throw new Error('Nenhum modelo preparado para envio.');
+    }
+    if (importDraft.preUploadedAssetId) {
+      return {
+        assetId: importDraft.preUploadedAssetId,
+        assetName: importDraft.fileName,
+      };
+    }
+    if (!importDraft.file) {
+      throw new Error('Arquivo 3D nao encontrado.');
+    }
+    if (importDraft.format === 'image') {
+      const uploadedImg = await uploadImageFileAsTazoAsset(importDraft.file);
+      return { assetId: uploadedImg.assetId, assetName: uploadedImg.name };
+    }
+    const arrayBuf = await importDraft.file.arrayBuffer();
+    const bytes = new Uint8Array(arrayBuf);
+    let binary = '';
+    const chunkSize = 0x8000;
+    for (let i = 0; i < bytes.length; i += chunkSize) {
+      binary += String.fromCharCode(...bytes.subarray(i, i + chunkSize));
+    }
+    const res = await fetch('/api/assets', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name: importDraft.file.name,
+        format: importDraft.format,
+        dataBase64: btoa(binary),
+      }),
+    });
+    if (!res.ok) {
+      const errData = await res.json().catch(() => ({}));
+      throw new Error(errData.error || 'Erro ao enviar arquivo 3D');
+    }
+    const uploaded = (await res.json()) as { assetId: string; name: string };
+    return { assetId: uploaded.assetId, assetName: uploaded.name };
+  };
+
+  const handleConfirmImport = async (applyToSelected = false) => {
     if (!importDraft) return;
     setUploading(true);
     setImportError(null);
 
     try {
-      let assetId = importDraft.preUploadedAssetId;
-      let assetName = importDraft.fileName;
+      const { assetId, assetName } = await uploadImportDraftAssetIfNeeded();
 
-      if (!assetId && importDraft.file) {
-        if (importDraft.format === 'image') {
-          const uploaded = await uploadImageFileAsTazoAsset(importDraft.file);
-          assetId = uploaded.assetId;
-          assetName = uploaded.name;
-        } else {
-          const arrayBuf = await importDraft.file.arrayBuffer();
-          const bytes = new Uint8Array(arrayBuf);
-          let binary = '';
-          const chunkSize = 0x8000;
-          for (let i = 0; i < bytes.length; i += chunkSize) {
-            binary += String.fromCharCode(...bytes.subarray(i, i + chunkSize));
-          }
-          const dataBase64 = btoa(binary);
-
-          const res = await fetch('/api/assets', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              name: importDraft.file.name,
-              format: importDraft.format,
-              dataBase64,
-            }),
-          });
-
-          if (!res.ok) {
-            const errData = await res.json().catch(() => ({}));
-            throw new Error(errData.error || 'Erro ao enviar arquivo 3D');
-          }
-
-          const uploaded = (await res.json()) as { assetId: string; name: string };
-          assetId = uploaded.assetId;
-          assetName = uploaded.name;
-        }
+      if (applyToSelected && selectedMini) {
+        onUpdateMini(selectedMini.id, {
+          format: importDraft.format,
+          assetId,
+          assetName,
+          remoteUrl: undefined,
+          footprint: importDraft.footprint,
+          scaleMultiplier: importDraft.scaleMultiplier,
+          fixZUp: importDraft.fixZUp,
+          showBase: importDraft.format === 'image' ? false : importDraft.showBase,
+          baseStyle: importDraft.baseStyle,
+          finish: importDraft.finish,
+          isPropOnly: importDraft.isPropOnly,
+        });
+        clearImportDraft();
+        setGmTab('scale');
+        return;
       }
 
       const offset = importDraft.footprint % 2 === 0 ? 0.5 : 0;
@@ -644,7 +679,7 @@ export const TabletopHUD: React.FC<TabletopHUDProps> = ({
     }
   };
 
-  const spawnCatalogAsset = (item: CuratedAssetItem) => {
+  const spawnCatalogAsset = (item: CuratedAssetItem, overrideFinish?: MiniFinish) => {
     setImportError(null);
     const offset = item.footprint % 2 === 0 ? 0.5 : 0;
     const isMonster = !item.isPropOnly && item.category === 'monster';
@@ -670,7 +705,7 @@ export const TabletopHUD: React.FC<TabletopHUDProps> = ({
       showBase: item.isPropOnly ? false : item.showBase,
       baseStyle: item.baseStyle,
       color: item.color,
-      finish: item.finish,
+      finish: overrideFinish || item.finish,
       hp: startHp,
       maxHp: startHp,
       ownerName: item.isPropOnly || isMonster ? '__GM__' : '',
@@ -682,11 +717,31 @@ export const TabletopHUD: React.FC<TabletopHUDProps> = ({
     onSetToolMode('interact');
   };
 
+  const applyCatalogAssetToSelected = (item: CuratedAssetItem, overrideFinish?: MiniFinish) => {
+    if (!selectedMini) return;
+    setImportError(null);
+    onUpdateMini(selectedMini.id, {
+      format: item.format,
+      assetId: `cat:${item.id}`,
+      assetName: item.name,
+      remoteUrl: item.url,
+      footprint: item.footprint,
+      scaleMultiplier: item.scaleMultiplier,
+      fixZUp: item.fixZUp,
+      showBase: item.isPropOnly ? false : item.showBase,
+      baseStyle: item.baseStyle,
+      finish: overrideFinish || item.finish,
+      isPropOnly: item.isPropOnly,
+    });
+    setGmTab('scale');
+  };
+
   const handleCreateMonsterWithSheet = async () => {
     const tpl =
       MONSTER_SHEET_TEMPLATES.find((t) => t.id === newMonsterTplId) ||
       MONSTER_SHEET_TEMPLATES[0];
     const catItem =
+      CATALOG_BY_ID[newMonsterAssetId] ||
       (tpl.catalogAssetId && CATALOG_BY_ID[tpl.catalogAssetId]) ||
       CATALOG_BY_ID['stl-goblin'] ||
       CURATED_3D_CATALOG.find((c) => c.category === 'monster')!;
@@ -700,7 +755,7 @@ export const TabletopHUD: React.FC<TabletopHUDProps> = ({
     let remoteUrlField: string | undefined = catItem.url;
     let fixZUp = catItem.fixZUp;
     let showBase = catItem.showBase;
-    let finish: MiniFinish = catItem.finish;
+    let finish: MiniFinish = newMonsterFinish || catItem.finish;
 
     if (newMonsterTazoFile) {
       setCreatingMonsterTazo(true);
@@ -750,6 +805,10 @@ export const TabletopHUD: React.FC<TabletopHUDProps> = ({
     onSetToolMode('interact');
     setNewMonsterName('');
     setNewMonsterTazoFile(null);
+    if (newMonsterTazoPreview?.startsWith('blob:')) {
+      URL.revokeObjectURL(newMonsterTazoPreview);
+    }
+    setNewMonsterTazoPreview(null);
     onOpenSheet(newMini.id);
   };
 
@@ -1565,63 +1624,158 @@ export const TabletopHUD: React.FC<TabletopHUDProps> = ({
                       </div>
                     </div>
 
-                    {/* View 1: Curated 1-Click Real .GLB / .STL Models */}
-                    {assetSourceView === 'catalog' && (
-                      <div className="space-y-2">
-                        <div className="flex flex-wrap items-center justify-between gap-2">
-                          <div className="flex flex-wrap items-center gap-1 p-0.5 bg-[#0b0e14] border border-stone-800 rounded-lg">
-                            {[
-                              { id: 'all', label: `Todos (${CURATED_3D_CATALOG.length})` },
-                              { id: 'character', label: 'Herois (.STL Xadrez)' },
-                              { id: 'monster', label: 'Monstros (.STL Xadrez)' },
-                              { id: 'dungeon', label: 'Masmorra (.GLB)' },
-                              { id: 'tavern', label: 'Taverna (.GLB)' },
-                              { id: 'nature', label: 'Natureza (.GLB)' },
-                            ].map((f) => (
-                              <button
-                                key={f.id}
-                                type="button"
-                                onClick={() => setCatalogFilter(f.id as typeof catalogFilter)}
-                                className={`px-2.5 py-1 text-xs rounded-md cursor-pointer ${
-                                  catalogFilter === f.id
-                                    ? 'bg-[#222938] text-amber-300 font-medium'
-                                    : 'text-stone-400 hover:text-stone-200'
-                                }`}
-                              >
-                                {f.label}
-                              </button>
-                            ))}
-                          </div>
-                          <span className="text-[11px] text-stone-400">
-                            Modelos 3D online em .GLB texturizado e .STL esculpido
-                          </span>
-                        </div>
+                    {/* View 1: Curated 3D Models with Live Turntable Preview before Spawn / Apply */}
+                    {assetSourceView === 'catalog' && (() => {
+                      const filteredCatalog = CURATED_3D_CATALOG.filter(
+                        (c) => catalogFilter === 'all' || c.category === catalogFilter
+                      );
+                      const previewItem =
+                        CATALOG_BY_ID[previewCatalogId] ||
+                        filteredCatalog[0] ||
+                        CURATED_3D_CATALOG[0];
 
-                        <div className="flex items-center gap-1.5 overflow-x-auto pb-1">
-                          {CURATED_3D_CATALOG.filter(
-                            (c) => catalogFilter === 'all' || c.category === catalogFilter
-                          ).map((item) => (
-                            <button
-                              key={item.id}
-                              type="button"
-                              onClick={() => spawnCatalogAsset(item)}
-                              className="flex flex-col items-start gap-0.5 px-3 py-1.5 text-xs bg-[#1a202c] hover:bg-[#252d3d] border border-stone-700/80 rounded-lg text-stone-200 whitespace-nowrap shrink-0 cursor-pointer"
-                            >
-                              <div className="flex items-center gap-1.5 font-medium">
-                                <span
-                                  className="w-2 h-2 rounded-full shrink-0"
-                                  style={{ backgroundColor: item.color }}
-                                />
-                                <span>+ {item.name}</span>
+                      return (
+                        <div className="space-y-2">
+                          <div className="flex flex-wrap items-center justify-between gap-2">
+                            <div className="flex flex-wrap items-center gap-1 p-0.5 bg-[#0b0e14] border border-stone-800 rounded-lg">
+                              {[
+                                { id: 'all', label: `Todos (${CURATED_3D_CATALOG.length})` },
+                                { id: 'character', label: 'Herois (.STL Xadrez)' },
+                                { id: 'monster', label: 'Monstros (.STL Xadrez)' },
+                                { id: 'dungeon', label: 'Masmorra (.GLB)' },
+                                { id: 'tavern', label: 'Taverna (.GLB)' },
+                                { id: 'nature', label: 'Natureza (.GLB)' },
+                              ].map((f) => (
+                                <button
+                                  key={f.id}
+                                  type="button"
+                                  onClick={() => {
+                                    const nextCat = f.id as typeof catalogFilter;
+                                    setCatalogFilter(nextCat);
+                                    const firstInCat = CURATED_3D_CATALOG.find(
+                                      (c) => nextCat === 'all' || c.category === nextCat
+                                    );
+                                    if (firstInCat) {
+                                      setPreviewCatalogId(firstInCat.id);
+                                      setPreviewFinish(firstInCat.finish);
+                                    }
+                                  }}
+                                  className={`px-2.5 py-1 text-xs rounded-md cursor-pointer ${
+                                    catalogFilter === f.id
+                                      ? 'bg-[#222938] text-amber-300 font-medium'
+                                      : 'text-stone-400 hover:text-stone-200'
+                                  }`}
+                                >
+                                  {f.label}
+                                </button>
+                              ))}
+                            </div>
+                            <span className="text-[11px] text-stone-400">
+                              Clique para pre-visualizar em 3D antes de colocar ou aplicar no monstro
+                            </span>
+                          </div>
+
+                          <div className="flex items-center gap-1.5 overflow-x-auto pb-1">
+                            {filteredCatalog.map((item) => {
+                              const isPreviewed = previewItem?.id === item.id;
+                              return (
+                                <button
+                                  key={item.id}
+                                  type="button"
+                                  onClick={() => {
+                                    setPreviewCatalogId(item.id);
+                                    setPreviewFinish(item.finish);
+                                  }}
+                                  className={`flex flex-col items-start gap-0.5 px-3 py-1.5 text-xs border rounded-lg whitespace-nowrap shrink-0 cursor-pointer transition-colors ${
+                                    isPreviewed
+                                      ? 'bg-[#252d3d] border-amber-400 text-amber-200'
+                                      : 'bg-[#1a202c] hover:bg-[#252d3d] border-stone-700/80 text-stone-200'
+                                  }`}
+                                >
+                                  <div className="flex items-center gap-1.5 font-medium">
+                                    <span
+                                      className="w-2 h-2 rounded-full shrink-0"
+                                      style={{ backgroundColor: item.color }}
+                                    />
+                                    <span>{item.name}</span>
+                                  </div>
+                                  <span className="text-[10px] font-mono-tabular text-stone-400">
+                                    {item.footprint}x{item.footprint} · {item.sizeLabel}
+                                  </span>
+                                </button>
+                              );
+                            })}
+                          </div>
+
+                          {previewItem && (
+                            <div className="flex flex-wrap items-center gap-3 p-2.5 bg-[#0c0f15] border border-stone-700/80 rounded-xl">
+                              <ModelPreview3D
+                                format={previewItem.format}
+                                assetId={`cat:${previewItem.id}`}
+                                remoteUrl={previewItem.url}
+                                footprint={previewItem.footprint}
+                                scaleMultiplier={previewItem.scaleMultiplier}
+                                fixZUp={previewItem.fixZUp}
+                                showBase={!previewItem.isPropOnly && previewItem.showBase}
+                                baseStyle={previewItem.baseStyle}
+                                finish={previewFinish}
+                                color={previewItem.color}
+                                isPropOnly={previewItem.isPropOnly}
+                                label={previewItem.name}
+                                sizePx={104}
+                              />
+
+                              <div className="flex-1 min-w-[220px] space-y-1.5">
+                                <div className="flex flex-wrap items-center gap-2">
+                                  <span className="text-xs font-semibold text-amber-300">
+                                    Preview 3D: {previewItem.name}
+                                  </span>
+                                  <span className="text-[10px] font-mono-tabular px-1.5 py-0.5 rounded bg-[#181d27] border border-stone-700 text-stone-300">
+                                    Grade {previewItem.footprint}x{previewItem.footprint} · {previewItem.sizeLabel}
+                                  </span>
+                                </div>
+                                <p className="text-[11px] text-stone-400">
+                                  Arraste o modelo ao lado para girar e conferir proporcao e acabamento antes de aplicar.
+                                </p>
+                                <div className="flex flex-wrap items-center gap-2 pt-0.5">
+                                  <select
+                                    value={previewFinish}
+                                    onChange={(e) => setPreviewFinish(e.target.value as MiniFinish)}
+                                    className="px-2 py-1 text-xs bg-[#161b24] border border-stone-700 rounded-lg text-stone-200"
+                                  >
+                                    {FINISHES.map((f) => (
+                                      <option key={f.id} value={f.id}>
+                                        Material: {f.label}
+                                      </option>
+                                    ))}
+                                  </select>
+
+                                  <button
+                                    type="button"
+                                    onClick={() => spawnCatalogAsset(previewItem, previewFinish)}
+                                    className="flex items-center gap-1 px-3 py-1.5 text-xs font-semibold bg-amber-600 hover:bg-amber-500 text-stone-950 rounded-lg cursor-pointer"
+                                  >
+                                    <Plus className="w-3.5 h-3.5" />
+                                    <span>Colocar na Mesa</span>
+                                  </button>
+
+                                  {selectedMini && (
+                                    <button
+                                      type="button"
+                                      onClick={() => applyCatalogAssetToSelected(previewItem, previewFinish)}
+                                      className="flex items-center gap-1 px-3 py-1.5 text-xs font-semibold bg-emerald-600 hover:bg-emerald-500 text-stone-950 rounded-lg cursor-pointer"
+                                    >
+                                      <Check className="w-3.5 h-3.5" />
+                                      <span>Aplicar em "{selectedMini.name}"</span>
+                                    </button>
+                                  )}
+                                </div>
                               </div>
-                              <span className="text-[10px] font-mono-tabular text-stone-400">
-                                {item.footprint}x{item.footprint} · {item.sizeLabel}
-                              </span>
-                            </button>
-                          ))}
+                            </div>
+                          )}
                         </div>
-                      </div>
-                    )}
+                      );
+                    })()}
 
                     {/* View 3: Custom URL + MakerWorld / GitHub Browser */}
                     {assetSourceView === 'import' && (
@@ -1685,211 +1839,230 @@ export const TabletopHUD: React.FC<TabletopHUDProps> = ({
                       </div>
                     )}
 
-                    {/* Smart Dimensioning / Tazo Token Preview Panel */}
+                    {/* Smart Dimensioning / Live 3D Turntable Preview Panel */}
                     {importDraft && (
-                      <div className="p-3 bg-[#0c0f15] border border-amber-500/40 rounded-lg space-y-2.5">
-                        <div className="flex flex-wrap items-center justify-between gap-2">
-                          <div className="flex items-center gap-2">
-                            {importDraft.format === 'image' && importDraft.previewUrl ? (
-                              <img
-                                src={importDraft.previewUrl}
-                                alt={importDraft.name}
-                                className="w-9 h-9 rounded-full object-cover border-2 shrink-0 bg-[#141923]"
-                                style={{ borderColor: importDraft.color }}
-                              />
-                            ) : (
-                              <Box className="w-4 h-4 text-amber-400" />
-                            )}
-                            <input
-                              type="text"
-                              value={importDraft.name}
-                              onChange={(e) => updateImportDraft({ name: e.target.value })}
-                              className="px-2 py-1 text-xs font-semibold bg-[#161b24] border border-stone-700 rounded text-stone-100 w-44"
-                            />
-                            <span className="text-xs font-mono-tabular text-sky-300">
-                              {importDraft.format === 'image'
-                                ? 'TAZO (IMAGEM)'
-                                : `.${importDraft.format.toUpperCase()}`}
-                            </span>
+                      <div className="p-3 bg-[#0c0f15] border border-amber-500/40 rounded-lg flex flex-wrap items-center gap-3">
+                        <ModelPreview3D
+                          format={importDraft.format}
+                          assetId={importDraft.preUploadedAssetId}
+                          rawObject={importDraft.rawObject as THREE.Object3D | null}
+                          imagePreviewUrl={importDraft.previewUrl}
+                          footprint={importDraft.footprint}
+                          scaleMultiplier={importDraft.scaleMultiplier}
+                          fixZUp={importDraft.fixZUp}
+                          showBase={importDraft.format === 'image' ? false : importDraft.showBase}
+                          baseStyle={importDraft.baseStyle}
+                          finish={importDraft.finish}
+                          color={importDraft.color}
+                          isPropOnly={importDraft.isPropOnly}
+                          label={importDraft.name}
+                          sizePx={104}
+                        />
 
-                            {importDraft.format === 'image' ? (
-                              <select
-                                value={
-                                  importDraft.isPropOnly
-                                    ? '__PROP__'
-                                    : importDraft.ownerName === '__GM__'
-                                    ? '__GM__'
-                                    : importDraft.ownerName
-                                }
-                                onChange={(e) => {
-                                  const v = e.target.value;
-                                  if (v === '__PROP__') {
-                                    updateImportDraft({ isPropOnly: true, ownerName: '__GM__' });
-                                  } else {
-                                    updateImportDraft({ isPropOnly: false, ownerName: v });
+                        <div className="flex-1 min-w-[260px] space-y-2.5">
+                          <div className="flex flex-wrap items-center justify-between gap-2">
+                            <div className="flex items-center gap-2">
+                              <input
+                                type="text"
+                                value={importDraft.name}
+                                onChange={(e) => updateImportDraft({ name: e.target.value })}
+                                className="px-2 py-1 text-xs font-semibold bg-[#161b24] border border-stone-700 rounded text-stone-100 w-44"
+                              />
+                              <span className="text-xs font-mono-tabular text-sky-300">
+                                {importDraft.format === 'image'
+                                  ? 'TAZO (IMAGEM)'
+                                  : `.${importDraft.format.toUpperCase()}`}
+                              </span>
+
+                              {importDraft.format === 'image' ? (
+                                <select
+                                  value={
+                                    importDraft.isPropOnly
+                                      ? '__PROP__'
+                                      : importDraft.ownerName === '__GM__'
+                                      ? '__GM__'
+                                      : importDraft.ownerName
                                   }
-                                }}
+                                  onChange={(e) => {
+                                    const v = e.target.value;
+                                    if (v === '__PROP__') {
+                                      updateImportDraft({ isPropOnly: true, ownerName: '__GM__' });
+                                    } else {
+                                      updateImportDraft({ isPropOnly: false, ownerName: v });
+                                    }
+                                  }}
+                                  className="px-2 py-1 text-xs bg-[#161b24] border border-stone-700 rounded text-stone-200"
+                                >
+                                  <option value="">Heroi (Qualquer Jogador)</option>
+                                  <option value="__GM__">Monstro / NPC (So Mestre)</option>
+                                  {(roomState?.users || [])
+                                    .filter((u) => u.role === 'player')
+                                    .map((u) => (
+                                      <option key={u.id} value={u.name}>
+                                        Jogador: {u.name}
+                                      </option>
+                                    ))}
+                                  <option value="__PROP__">Marcador de Cenario (s/ Ficha)</option>
+                                </select>
+                              ) : (
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    updateImportDraft({
+                                      isPropOnly: !importDraft.isPropOnly,
+                                      showBase: importDraft.isPropOnly,
+                                    })
+                                  }
+                                  className={`px-2 py-1 text-xs rounded border cursor-pointer ${
+                                    importDraft.isPropOnly
+                                      ? 'bg-sky-900/60 border-sky-500 text-sky-200'
+                                      : 'bg-[#161b24] border-stone-700 text-amber-300'
+                                  }`}
+                                >
+                                  {importDraft.isPropOnly
+                                    ? 'Objeto de Cenario 3D (s/ Base)'
+                                    : 'Miniatura (c/ Base)'}
+                                </button>
+                              )}
+                            </div>
+
+                            {importDraft.dimInfo ? (
+                              <span className="text-xs font-mono-tabular text-stone-400">
+                                Bruto: {importDraft.dimInfo.rawWidth} × {importDraft.dimInfo.rawHeight} ×{' '}
+                                {importDraft.dimInfo.rawDepth} · {importDraft.dimInfo.unitHint} · Final:{' '}
+                                {importDraft.dimInfo.finalHeight}u
+                              </span>
+                            ) : importDraft.format === 'image' ? (
+                              <span className="text-xs text-stone-400">
+                                Ficha circular com borda metalica 3D na mesa
+                              </span>
+                            ) : null}
+                          </div>
+
+                          <div className="flex flex-wrap items-center gap-2.5">
+                            <div className="flex items-center gap-1">
+                              <span className="text-xs text-stone-400">Grade:</span>
+                              {FOOTPRINTS.map((fp) => (
+                                <button
+                                  key={fp.value}
+                                  type="button"
+                                  onClick={() => updateImportDraft({ footprint: fp.value })}
+                                  className={`px-2 py-1 text-xs font-mono-tabular rounded border cursor-pointer ${
+                                    importDraft.footprint === fp.value
+                                      ? 'bg-amber-600 text-stone-950 border-amber-500 font-semibold'
+                                      : 'bg-[#161b24] text-stone-300 border-stone-700'
+                                  }`}
+                                >
+                                  {fp.label}
+                                </button>
+                              ))}
+                            </div>
+
+                            <label className="flex items-center gap-2 text-xs text-stone-300">
+                              <span>Escala {importDraft.scaleMultiplier.toFixed(2)}x</span>
+                              <input
+                                type="range"
+                                min="0.25"
+                                max="2.5"
+                                step="0.05"
+                                value={importDraft.scaleMultiplier}
+                                onChange={(e) =>
+                                  updateImportDraft({ scaleMultiplier: parseFloat(e.target.value) })
+                                }
+                                className="w-20 accent-amber-500"
+                              />
+                            </label>
+
+                            {importDraft.format !== 'image' && (
+                              <button
+                                type="button"
+                                onClick={() => updateImportDraft({ fixZUp: !importDraft.fixZUp })}
+                                className={`px-2 py-1 text-xs rounded border cursor-pointer ${
+                                  importDraft.fixZUp
+                                    ? 'bg-sky-900/60 border-sky-500 text-sky-200'
+                                    : 'bg-[#161b24] border-stone-700 text-stone-400'
+                                }`}
+                              >
+                                {importDraft.fixZUp ? 'Z-Up Corrigido' : 'Y-Up'}
+                              </button>
+                            )}
+
+                            {importDraft.format !== 'image' && !importDraft.isPropOnly && (
+                              <select
+                                value={importDraft.baseStyle}
+                                onChange={(e) =>
+                                  updateImportDraft({ baseStyle: e.target.value as BaseStyle })
+                                }
                                 className="px-2 py-1 text-xs bg-[#161b24] border border-stone-700 rounded text-stone-200"
                               >
-                                <option value="">Heroi (Qualquer Jogador)</option>
-                                <option value="__GM__">Monstro / NPC (So Mestre)</option>
-                                {(roomState?.users || [])
-                                  .filter((u) => u.role === 'player')
-                                  .map((u) => (
-                                    <option key={u.id} value={u.name}>
-                                      Jogador: {u.name}
-                                    </option>
-                                  ))}
-                                <option value="__PROP__">Marcador de Cenario (s/ Ficha)</option>
+                                {BASE_STYLES.map((b) => (
+                                  <option key={b.id} value={b.id}>
+                                    {b.label}
+                                  </option>
+                                ))}
                               </select>
-                            ) : (
-                              <button
-                                type="button"
-                                onClick={() =>
-                                  updateImportDraft({
-                                    isPropOnly: !importDraft.isPropOnly,
-                                    showBase: importDraft.isPropOnly,
-                                  })
-                                }
-                                className={`px-2 py-1 text-xs rounded border cursor-pointer ${
-                                  importDraft.isPropOnly
-                                    ? 'bg-sky-900/60 border-sky-500 text-sky-200'
-                                    : 'bg-[#161b24] border-stone-700 text-amber-300'
-                                }`}
-                              >
-                                {importDraft.isPropOnly
-                                  ? 'Objeto de Cenario 3D (s/ Base)'
-                                  : 'Miniatura (c/ Base)'}
-                              </button>
                             )}
-                          </div>
 
-                          {importDraft.dimInfo ? (
-                            <span className="text-xs font-mono-tabular text-stone-400">
-                              Bruto: {importDraft.dimInfo.rawWidth} × {importDraft.dimInfo.rawHeight} ×{' '}
-                              {importDraft.dimInfo.rawDepth} · {importDraft.dimInfo.unitHint} · Final:{' '}
-                              {importDraft.dimInfo.finalHeight}u
-                            </span>
-                          ) : importDraft.format === 'image' ? (
-                            <span className="text-xs text-stone-400">
-                              Ficha circular com borda metalica 3D na mesa
-                            </span>
-                          ) : null}
-                        </div>
-
-                        <div className="flex flex-wrap items-center gap-2.5">
-                          <div className="flex items-center gap-1">
-                            <span className="text-xs text-stone-400">Grade:</span>
-                            {FOOTPRINTS.map((fp) => (
-                              <button
-                                key={fp.value}
-                                type="button"
-                                onClick={() => updateImportDraft({ footprint: fp.value })}
-                                className={`px-2 py-1 text-xs font-mono-tabular rounded border cursor-pointer ${
-                                  importDraft.footprint === fp.value
-                                    ? 'bg-amber-600 text-stone-950 border-amber-500 font-semibold'
-                                    : 'bg-[#161b24] text-stone-300 border-stone-700'
-                                }`}
-                              >
-                                {fp.label}
-                              </button>
-                            ))}
-                          </div>
-
-                          <label className="flex items-center gap-2 text-xs text-stone-300">
-                            <span>Escala {importDraft.scaleMultiplier.toFixed(2)}x</span>
-                            <input
-                              type="range"
-                              min="0.25"
-                              max="2.5"
-                              step="0.05"
-                              value={importDraft.scaleMultiplier}
-                              onChange={(e) =>
-                                updateImportDraft({ scaleMultiplier: parseFloat(e.target.value) })
-                              }
-                              className="w-20 accent-amber-500"
-                            />
-                          </label>
-
-                          {importDraft.format !== 'image' && (
-                            <button
-                              type="button"
-                              onClick={() => updateImportDraft({ fixZUp: !importDraft.fixZUp })}
-                              className={`px-2 py-1 text-xs rounded border cursor-pointer ${
-                                importDraft.fixZUp
-                                  ? 'bg-sky-900/60 border-sky-500 text-sky-200'
-                                  : 'bg-[#161b24] border-stone-700 text-stone-400'
-                              }`}
-                            >
-                              {importDraft.fixZUp ? 'Z-Up Corrigido' : 'Y-Up'}
-                            </button>
-                          )}
-
-                          {importDraft.format !== 'image' && !importDraft.isPropOnly && (
                             <select
-                              value={importDraft.baseStyle}
+                              value={importDraft.finish}
                               onChange={(e) =>
-                                updateImportDraft({ baseStyle: e.target.value as BaseStyle })
+                                updateImportDraft({ finish: e.target.value as MiniFinish })
                               }
                               className="px-2 py-1 text-xs bg-[#161b24] border border-stone-700 rounded text-stone-200"
                             >
-                              {BASE_STYLES.map((b) => (
-                                <option key={b.id} value={b.id}>
-                                  {b.label}
+                              {FINISHES.map((f) => (
+                                <option key={f.id} value={f.id}>
+                                  {importDraft.format === 'image' ? 'Borda' : 'Material'}: {f.label}
                                 </option>
                               ))}
                             </select>
-                          )}
 
-                          <select
-                            value={importDraft.finish}
-                            onChange={(e) =>
-                              updateImportDraft({ finish: e.target.value as MiniFinish })
-                            }
-                            className="px-2 py-1 text-xs bg-[#161b24] border border-stone-700 rounded text-stone-200"
-                          >
-                            {FINISHES.map((f) => (
-                              <option key={f.id} value={f.id}>
-                                {importDraft.format === 'image' ? 'Borda' : 'Material'}: {f.label}
-                              </option>
-                            ))}
-                          </select>
+                            {importDraft.format === 'image' && (
+                              <div className="flex items-center gap-1">
+                                {MINI_COLORS.map((c) => (
+                                  <button
+                                    key={c}
+                                    type="button"
+                                    onClick={() => updateImportDraft({ color: c })}
+                                    aria-label={`Cor ${c}`}
+                                    className={`w-4 h-4 rounded-full border cursor-pointer ${
+                                      importDraft.color === c
+                                        ? 'border-white scale-110'
+                                        : 'border-transparent opacity-70'
+                                    }`}
+                                    style={{ backgroundColor: c }}
+                                  />
+                                ))}
+                              </div>
+                            )}
 
-                          {importDraft.format === 'image' && (
-                            <div className="flex items-center gap-1">
-                              {MINI_COLORS.map((c) => (
+                            <div className="flex items-center gap-1.5 ml-auto">
+                              <button
+                                type="button"
+                                onClick={clearImportDraft}
+                                className="px-2.5 py-1.5 text-xs text-stone-300 hover:text-white cursor-pointer"
+                              >
+                                Cancelar
+                              </button>
+                              {selectedMini && (
                                 <button
-                                  key={c}
                                   type="button"
-                                  onClick={() => updateImportDraft({ color: c })}
-                                  aria-label={`Cor ${c}`}
-                                  className={`w-4 h-4 rounded-full border cursor-pointer ${
-                                    importDraft.color === c
-                                      ? 'border-white scale-110'
-                                      : 'border-transparent opacity-70'
-                                  }`}
-                                  style={{ backgroundColor: c }}
-                                />
-                              ))}
+                                  disabled={uploading}
+                                  onClick={() => handleConfirmImport(true)}
+                                  className="px-3 py-1.5 text-xs font-semibold bg-sky-500 hover:bg-sky-400 disabled:opacity-50 text-stone-950 rounded-lg cursor-pointer"
+                                >
+                                  {uploading ? 'Enviando...' : `Aplicar em "${selectedMini.name}"`}
+                                </button>
+                              )}
+                              <button
+                                type="button"
+                                disabled={uploading}
+                                onClick={() => handleConfirmImport(false)}
+                                className="px-3.5 py-1.5 text-xs font-semibold bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-stone-950 rounded-lg cursor-pointer"
+                              >
+                                {uploading ? 'Enviando...' : 'Colocar na Mesa'}
+                              </button>
                             </div>
-                          )}
-
-                          <div className="flex items-center gap-1 ml-auto">
-                            <button
-                              type="button"
-                              onClick={clearImportDraft}
-                              className="px-2.5 py-1.5 text-xs text-stone-300 hover:text-white cursor-pointer"
-                            >
-                              Cancelar
-                            </button>
-                            <button
-                              type="button"
-                              disabled={uploading}
-                              onClick={handleConfirmImport}
-                              className="px-3.5 py-1.5 text-xs font-semibold bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-stone-950 rounded-lg cursor-pointer"
-                            >
-                              {uploading ? 'Enviando...' : 'Colocar na Mesa'}
-                            </button>
                           </div>
                         </div>
                       </div>
@@ -2126,6 +2299,43 @@ export const TabletopHUD: React.FC<TabletopHUDProps> = ({
 
                           <button
                             type="button"
+                            onClick={() => {
+                              const isMon =
+                                selectedMini.ownerName === '__GM__' ||
+                                Boolean(selectedMini.sheet?.isMonster);
+                              const nextCat: CatalogCategory = selectedMini.isPropOnly
+                                ? 'dungeon'
+                                : isMon
+                                ? 'monster'
+                                : 'character';
+                              setCatalogFilter(nextCat);
+                              const currentId = selectedMini.assetId?.startsWith('cat:')
+                                ? selectedMini.assetId.slice(4)
+                                : '';
+                              if (currentId && CATALOG_BY_ID[currentId]) {
+                                setPreviewCatalogId(currentId);
+                                setPreviewFinish(selectedMini.finish);
+                              } else {
+                                const first = CURATED_3D_CATALOG.find(
+                                  (c) => c.category === nextCat
+                                );
+                                if (first) {
+                                  setPreviewCatalogId(first.id);
+                                  setPreviewFinish(first.finish);
+                                }
+                              }
+                              setAssetSourceView('catalog');
+                              setGmTab('minis');
+                            }}
+                            title="Pre-visualizar e trocar o modelo 3D desta miniatura"
+                            className="flex items-center gap-1 px-2.5 py-1 text-xs bg-[#181d27] hover:bg-[#242c3d] border border-sky-500/40 rounded-lg text-sky-300 font-medium cursor-pointer"
+                          >
+                            <Box className="w-3.5 h-3.5" />
+                            <span>Trocar Modelo</span>
+                          </button>
+
+                          <button
+                            type="button"
                             onClick={() => onDeleteMini(selectedMini.id)}
                             title="Remover miniatura"
                             className="p-1.5 text-rose-400 hover:text-rose-300 bg-rose-950/40 border border-rose-500/30 rounded-lg cursor-pointer"
@@ -2156,82 +2366,171 @@ export const TabletopHUD: React.FC<TabletopHUDProps> = ({
                     <div className="space-y-2.5">
                       {/* Create Monster & Add Extra Hero for Player bars */}
                       <div className="space-y-2 pb-2 border-b border-stone-800">
-                        <div className="flex flex-wrap items-center justify-between gap-2">
-                          <div className="flex flex-wrap items-center gap-2">
-                            <span className="flex items-center gap-1.5 text-xs font-semibold text-rose-300">
-                              <Skull className="w-3.5 h-3.5 text-rose-400" />
-                              Monstro (Mestre):
-                            </span>
-                            <select
-                              value={newMonsterTplId}
-                              onChange={(e) => setNewMonsterTplId(e.target.value)}
-                              className="px-2.5 py-1 text-xs bg-[#0c0f15] border border-stone-700 rounded-lg text-stone-200"
-                            >
-                              {MONSTER_SHEET_TEMPLATES.map((t) => (
-                                <option key={t.id} value={t.id}>
-                                  {t.label} ({t.suggestedHp} PV · CA {t.sheet.ac})
-                                </option>
-                              ))}
-                            </select>
-                            <input
-                              type="text"
-                              value={newMonsterName}
-                              maxLength={32}
-                              onChange={(e) => setNewMonsterName(e.target.value)}
-                              placeholder="Nome do monstro (opcional)"
-                              className="w-40 px-2.5 py-1 text-xs bg-[#0c0f15] border border-stone-700 rounded-lg text-stone-200 placeholder:text-stone-500 focus:outline-none"
-                            />
-                            <input
-                              ref={monsterTazoInputRef}
-                              type="file"
-                              accept=".png,.jpg,.jpeg,.webp"
-                              className="hidden"
-                              onChange={(e) => {
-                                const f = e.target.files?.[0];
-                                if (f) setNewMonsterTazoFile(f);
-                                e.target.value = '';
-                              }}
-                            />
-                            <button
-                              type="button"
-                              onClick={() => monsterTazoInputRef.current?.click()}
-                              title="Opcional: usar imagem (Tazo) para este monstro"
-                              className={`flex items-center gap-1 px-2 py-1 text-xs rounded-lg border cursor-pointer ${
-                                newMonsterTazoFile
-                                  ? 'bg-sky-950/60 border-sky-500/60 text-sky-200'
-                                  : 'bg-[#0c0f15] border-stone-700 text-stone-300 hover:border-stone-500'
-                              }`}
-                            >
-                              <Disc className="w-3.5 h-3.5 text-sky-400" />
-                              <span className="max-w-[90px] truncate">
-                                {newMonsterTazoFile ? newMonsterTazoFile.name : 'Img Tazo'}
-                              </span>
-                            </button>
-                            {newMonsterTazoFile && (
-                              <button
-                                type="button"
-                                onClick={() => setNewMonsterTazoFile(null)}
-                                aria-label="Remover imagem do monstro"
-                                className="p-1 text-stone-400 hover:text-rose-400 cursor-pointer"
-                              >
-                                <X className="w-3.5 h-3.5" />
-                              </button>
-                            )}
-                            <button
-                              type="button"
-                              disabled={creatingMonsterTazo}
-                              onClick={handleCreateMonsterWithSheet}
-                              className="flex items-center gap-1.5 px-3 py-1 text-xs font-semibold bg-rose-600 hover:bg-rose-500 disabled:opacity-50 text-white rounded-lg cursor-pointer"
-                            >
-                              <Plus className="w-3.5 h-3.5" />
-                              <span>{creatingMonsterTazo ? 'Enviando...' : 'Criar Monstro'}</span>
-                            </button>
-                          </div>
+                        {(() => {
+                          const monsterPreviewItem =
+                            CATALOG_BY_ID[newMonsterAssetId] ||
+                            CATALOG_BY_ID['stl-goblin'] ||
+                            CURATED_3D_CATALOG.find((c) => c.category === 'monster')!;
+                          const monsterModelOptions = CURATED_3D_CATALOG.filter(
+                            (c) => c.category === 'monster' || c.category === 'character'
+                          );
+                          return (
+                            <div className="flex flex-wrap items-center justify-between gap-3 p-2 bg-[#0c0f15] border border-stone-800 rounded-xl">
+                              <div className="flex items-center gap-3 flex-1 min-w-[260px]">
+                                <ModelPreview3D
+                                  format={newMonsterTazoFile ? 'image' : monsterPreviewItem.format}
+                                  assetId={`cat:${monsterPreviewItem.id}`}
+                                  remoteUrl={monsterPreviewItem.url}
+                                  imagePreviewUrl={newMonsterTazoPreview}
+                                  footprint={monsterPreviewItem.footprint}
+                                  scaleMultiplier={monsterPreviewItem.scaleMultiplier}
+                                  fixZUp={monsterPreviewItem.fixZUp}
+                                  showBase={!newMonsterTazoFile && monsterPreviewItem.showBase}
+                                  baseStyle={monsterPreviewItem.baseStyle}
+                                  finish={newMonsterFinish}
+                                  color={newMonsterTazoFile ? '#ef4444' : monsterPreviewItem.color}
+                                  isPropOnly={false}
+                                  label={monsterPreviewItem.name}
+                                  sizePx={88}
+                                />
 
-                          <span className="text-[11px] text-stone-400">
-                            {actors.length} {actors.length === 1 ? 'ficha ativa' : 'fichas ativas'} na mesa
-                          </span>
-                        </div>
+                                <div className="flex flex-wrap items-center gap-2 flex-1">
+                                  <span className="flex items-center gap-1.5 text-xs font-semibold text-rose-300">
+                                    <Skull className="w-3.5 h-3.5 text-rose-400" />
+                                    Monstro (Mestre):
+                                  </span>
+                                  <select
+                                    value={newMonsterTplId}
+                                    onChange={(e) => {
+                                      const id = e.target.value;
+                                      setNewMonsterTplId(id);
+                                      const tpl = MONSTER_SHEET_TEMPLATES.find((t) => t.id === id);
+                                      if (tpl?.catalogAssetId) {
+                                        setNewMonsterAssetId(tpl.catalogAssetId);
+                                      }
+                                    }}
+                                    className="px-2.5 py-1 text-xs bg-[#161b24] border border-stone-700 rounded-lg text-stone-200"
+                                  >
+                                    {MONSTER_SHEET_TEMPLATES.map((t) => (
+                                      <option key={t.id} value={t.id}>
+                                        Ficha: {t.label} ({t.suggestedHp} PV · CA {t.sheet.ac})
+                                      </option>
+                                    ))}
+                                  </select>
+
+                                  <select
+                                    value={newMonsterAssetId}
+                                    onChange={(e) => setNewMonsterAssetId(e.target.value)}
+                                    className="px-2.5 py-1 text-xs bg-[#161b24] border border-stone-700 rounded-lg text-amber-200"
+                                  >
+                                    {monsterModelOptions.map((m) => (
+                                      <option key={m.id} value={m.id}>
+                                        Modelo 3D: {m.name} ({m.footprint}x{m.footprint})
+                                      </option>
+                                    ))}
+                                  </select>
+
+                                  <select
+                                    value={newMonsterFinish}
+                                    onChange={(e) => setNewMonsterFinish(e.target.value as MiniFinish)}
+                                    className="px-2 py-1 text-xs bg-[#161b24] border border-stone-700 rounded-lg text-stone-200"
+                                  >
+                                    {FINISHES.map((f) => (
+                                      <option key={f.id} value={f.id}>
+                                        {f.label}
+                                      </option>
+                                    ))}
+                                  </select>
+
+                                  <input
+                                    type="text"
+                                    value={newMonsterName}
+                                    maxLength={32}
+                                    onChange={(e) => setNewMonsterName(e.target.value)}
+                                    placeholder="Nome do monstro (opcional)"
+                                    className="w-40 px-2.5 py-1 text-xs bg-[#161b24] border border-stone-700 rounded-lg text-stone-200 placeholder:text-stone-500 focus:outline-none"
+                                  />
+
+                                  <input
+                                    ref={monsterTazoInputRef}
+                                    type="file"
+                                    accept=".png,.jpg,.jpeg,.webp"
+                                    className="hidden"
+                                    onChange={(e) => {
+                                      const f = e.target.files?.[0];
+                                      if (f) {
+                                        if (newMonsterTazoPreview?.startsWith('blob:')) {
+                                          URL.revokeObjectURL(newMonsterTazoPreview);
+                                        }
+                                        setNewMonsterTazoFile(f);
+                                        setNewMonsterTazoPreview(URL.createObjectURL(f));
+                                      }
+                                      e.target.value = '';
+                                    }}
+                                  />
+                                  <button
+                                    type="button"
+                                    onClick={() => monsterTazoInputRef.current?.click()}
+                                    title="Opcional: usar imagem (Tazo) para este monstro"
+                                    className={`flex items-center gap-1 px-2 py-1 text-xs rounded-lg border cursor-pointer ${
+                                      newMonsterTazoFile
+                                        ? 'bg-sky-950/60 border-sky-500/60 text-sky-200'
+                                        : 'bg-[#161b24] border-stone-700 text-stone-300 hover:border-stone-500'
+                                    }`}
+                                  >
+                                    <Disc className="w-3.5 h-3.5 text-sky-400" />
+                                    <span className="max-w-[90px] truncate">
+                                      {newMonsterTazoFile ? newMonsterTazoFile.name : 'Img Tazo'}
+                                    </span>
+                                  </button>
+                                  {newMonsterTazoFile && (
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        setNewMonsterTazoFile(null);
+                                        if (newMonsterTazoPreview?.startsWith('blob:')) {
+                                          URL.revokeObjectURL(newMonsterTazoPreview);
+                                        }
+                                        setNewMonsterTazoPreview(null);
+                                      }}
+                                      aria-label="Remover imagem do monstro"
+                                      className="p-1 text-stone-400 hover:text-rose-400 cursor-pointer"
+                                    >
+                                      <X className="w-3.5 h-3.5" />
+                                    </button>
+                                  )}
+
+                                  {selectedMini && !newMonsterTazoFile && (
+                                    <button
+                                      type="button"
+                                      onClick={() =>
+                                        applyCatalogAssetToSelected(monsterPreviewItem, newMonsterFinish)
+                                      }
+                                      className="flex items-center gap-1 px-2.5 py-1 text-xs font-semibold bg-emerald-600 hover:bg-emerald-500 text-stone-950 rounded-lg cursor-pointer"
+                                    >
+                                      <Check className="w-3.5 h-3.5" />
+                                      <span>Aplicar em "{selectedMini.name}"</span>
+                                    </button>
+                                  )}
+
+                                  <button
+                                    type="button"
+                                    disabled={creatingMonsterTazo}
+                                    onClick={handleCreateMonsterWithSheet}
+                                    className="flex items-center gap-1.5 px-3 py-1 text-xs font-semibold bg-rose-600 hover:bg-rose-500 disabled:opacity-50 text-white rounded-lg cursor-pointer"
+                                  >
+                                    <Plus className="w-3.5 h-3.5" />
+                                    <span>{creatingMonsterTazo ? 'Enviando...' : 'Criar Monstro'}</span>
+                                  </button>
+                                </div>
+                              </div>
+
+                              <span className="text-[11px] text-stone-400">
+                                {actors.length} {actors.length === 1 ? 'ficha ativa' : 'fichas ativas'} na mesa
+                              </span>
+                            </div>
+                          );
+                        })()}
 
                         <div className="flex flex-wrap items-center gap-2">
                           <span className="flex items-center gap-1.5 text-xs font-semibold text-sky-300">
@@ -3157,6 +3456,27 @@ export const TabletopHUD: React.FC<TabletopHUDProps> = ({
                         </div>
                       ) : (
                         <>
+                          {(() => {
+                            const heroPreview =
+                              CATALOG_BY_ID[playerHeroAssetId] || CATALOG_BY_ID['stl-hero-barbarian']!;
+                            return !playerCustomFile ? (
+                              <ModelPreview3D
+                                format={heroPreview.format}
+                                assetId={`cat:${heroPreview.id}`}
+                                remoteUrl={heroPreview.url}
+                                footprint={heroPreview.footprint}
+                                scaleMultiplier={heroPreview.scaleMultiplier}
+                                fixZUp={heroPreview.fixZUp}
+                                showBase
+                                baseStyle={heroPreview.baseStyle}
+                                finish={heroPreview.finish}
+                                color={playerHeroColor || heroPreview.color}
+                                isPropOnly={false}
+                                label={heroPreview.name}
+                                sizePx={72}
+                              />
+                            ) : null;
+                          })()}
                           <select
                             value={playerHeroAssetId}
                             onChange={(e) => {
