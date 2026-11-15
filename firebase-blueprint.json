@@ -1,0 +1,179 @@
+{
+  "entities": {
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "Private user profile for authenticated tabletop participants.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "displayName": {
+          "type": "string",
+          "maxLength": 48
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["uid", "displayName", "updatedAt"]
+    },
+    "Room": {
+      "title": "Room",
+      "description": "Persisted RPG tabletop room state including terrain grid, music, and GM ownership.",
+      "type": "object",
+      "properties": {
+        "roomId": {
+          "type": "string",
+          "maxLength": 24,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "ownerUid": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "gmName": {
+          "type": "string",
+          "maxLength": 32
+        },
+        "presetName": {
+          "type": "string",
+          "enum": ["blank", "crypt", "tavern", "arena"]
+        },
+        "cols": {
+          "type": "integer"
+        },
+        "rows": {
+          "type": "integer"
+        },
+        "tiles": {
+          "type": "object"
+        },
+        "music": {
+          "type": "object"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["roomId", "ownerUid", "gmName", "presetName", "cols", "rows", "tiles", "createdAt", "updatedAt"]
+    },
+    "Miniature": {
+      "title": "Miniature",
+      "description": "3D miniature or scenery prop on the board with its RPG character/monster sheet.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "maxLength": 64,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "roomId": {
+          "type": "string",
+          "maxLength": 24,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "roomOwnerUid": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "ownerUid": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "ownerName": {
+          "type": "string",
+          "maxLength": 32
+        },
+        "name": {
+          "type": "string",
+          "maxLength": 32
+        },
+        "format": {
+          "type": "string",
+          "enum": ["builtin", "stl", "obj", "glb", "gltf", "image"]
+        },
+        "x": { "type": "number" },
+        "z": { "type": "number" },
+        "rotationY": { "type": "number" },
+        "footprint": { "type": "number" },
+        "scaleMultiplier": { "type": "number" },
+        "fixZUp": { "type": "boolean" },
+        "showBase": { "type": "boolean" },
+        "color": { "type": "string", "maxLength": 16 },
+        "finish": { "type": "string", "maxLength": 16 },
+        "hp": { "type": "integer" },
+        "maxHp": { "type": "integer" },
+        "isPropOnly": { "type": "boolean" },
+        "sheet": { "type": "object" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "roomId", "roomOwnerUid", "ownerUid", "ownerName", "name", "format", "x", "z", "hp", "maxHp", "isPropOnly", "updatedAt"]
+    },
+    "MapAnnotation": {
+      "title": "MapAnnotation",
+      "description": "3D map marker or tactical area annotation placed by the GM.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "maxLength": 64,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "roomId": {
+          "type": "string",
+          "maxLength": 24,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "ownerUid": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "kind": {
+          "type": "string",
+          "enum": ["marker", "circle", "square", "cone", "line"]
+        },
+        "x": { "type": "number" },
+        "z": { "type": "number" },
+        "radius": { "type": "number" },
+        "rotationY": { "type": "number" },
+        "color": { "type": "string", "maxLength": 16 },
+        "label": { "type": "string", "maxLength": 48 },
+        "gmOnly": { "type": "boolean" },
+        "createdBy": { "type": "string", "maxLength": 32 },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "roomId", "ownerUid", "kind", "x", "z", "radius", "gmOnly", "label", "updatedAt"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/UserProfile" },
+      "description": "Authenticated user profile isolated to the owning user."
+    },
+    "/rooms/{roomId}": {
+      "schema": { "$ref": "#/entities/Room" },
+      "description": "Saved RPG tabletop rooms with terrain tiles, preset, and music state."
+    },
+    "/rooms/{roomId}/miniatures/{miniId}": {
+      "schema": { "$ref": "#/entities/Miniature" },
+      "description": "Characters, monsters, and 3D props belonging to a room, with embedded sheets."
+    },
+    "/rooms/{roomId}/annotations/{annotationId}": {
+      "schema": { "$ref": "#/entities/MapAnnotation" },
+      "description": "GM-authored 3D markers and tactical shapes in a room."
+    }
+  }
+}
