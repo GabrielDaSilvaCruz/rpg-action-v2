@@ -10,6 +10,7 @@ import {
   ModelFormat,
   TILE_SIZE,
 } from '../types/vtt';
+import { apiUrl } from '../utils/backendUrl';
 
 const BASE_PEDESTAL_HEIGHT = 0.085;
 
@@ -94,13 +95,16 @@ export async function fetchAssetBuffer(
   }
 
   const endpoint = remoteUrl
-    ? `/api/assets/proxy?url=${encodeURIComponent(remoteUrl)}`
-    : `/api/assets/${encodeURIComponent(assetId!)}`;
+    ? apiUrl(`/api/assets/proxy?url=${encodeURIComponent(remoteUrl)}`)
+    : apiUrl(`/api/assets/${encodeURIComponent(assetId!)}`);
 
   const promise = (async () => {
-    const res = await fetch(endpoint);
-    if (!res.ok) {
-      throw new Error(`Erro ao baixar modelo 3D (${res.status})`);
+    let res = await fetch(endpoint).catch(() => null);
+    if ((!res || !res.ok) && remoteUrl && /^https:\/\/raw\.githubusercontent\.com\//i.test(remoteUrl)) {
+      res = await fetch(remoteUrl);
+    }
+    if (!res || !res.ok) {
+      throw new Error(`Erro ao baixar modelo 3D (${res ? res.status : 'rede'})`);
     }
     const buf = await res.arrayBuffer();
     rawAssetCache.set(cacheKey, buf);

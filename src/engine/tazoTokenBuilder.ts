@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { FootprintSize, MiniFinish, TILE_SIZE } from '../types/vtt';
+import { apiUrl } from '../utils/backendUrl';
 
 const decodedBitmapCache = new Map<string, Promise<ImageBitmap | HTMLImageElement>>();
 const tazoTextureCache = new Map<string, THREE.CanvasTexture>();
@@ -285,7 +286,7 @@ export async function uploadImageFileAsTazoAsset(file: File): Promise<{
     binary += String.fromCharCode(...bytes.subarray(i, i + chunkSize));
   }
 
-  const res = await fetch('/api/assets', {
+  const res = await fetch(apiUrl('/api/assets'), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({

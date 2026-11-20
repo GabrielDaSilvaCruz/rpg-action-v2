@@ -345,6 +345,10 @@ async function startServer() {
     'http://localhost:3000',
     'http://127.0.0.1:3000',
     'http://localhost:5173',
+    ...(process.env.ALLOWED_ORIGINS || '')
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean),
   ]);
 
   app.use((req, res, next) => {

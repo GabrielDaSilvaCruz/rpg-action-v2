@@ -41,6 +41,7 @@ import {
   MapSnapshot,
   pushHistoryEntry,
 } from './utils/mapHistory';
+import { wsUrl } from './utils/backendUrl';
 
 function cloneSnapshot(
   presetName: MapPresetId,
@@ -603,10 +604,7 @@ export default function App() {
     let closedByCleanup = false;
 
     const connect = () => {
-      const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-      const url = `${proto}//${window.location.host}/ws?room=${encodeURIComponent(
-        userSessionRef.current.roomId
-      )}`;
+      const url = wsUrl(`/ws?room=${encodeURIComponent(userSessionRef.current.roomId)}`);
       const ws = new WebSocket(url);
       wsRef.current = ws;
 

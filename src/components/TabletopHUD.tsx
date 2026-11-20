@@ -85,6 +85,7 @@ import {
 } from '../utils/youtubeMusic';
 import { YouTubeSyncPlayer } from './YouTubeSyncPlayer';
 import { ModelPreview3D } from './ModelPreview3D';
+import { apiUrl } from '../utils/backendUrl';
 import {
   HERO_SHEET_TEMPLATES,
   MONSTER_SHEET_TEMPLATES,
@@ -423,7 +424,7 @@ export const TabletopHUD: React.FC<TabletopHUDProps> = ({
       const previewUrl = file
         ? URL.createObjectURL(file)
         : preUploadedAssetId
-        ? `/api/assets/${encodeURIComponent(preUploadedAssetId)}`
+        ? apiUrl(`/api/assets/${encodeURIComponent(preUploadedAssetId)}`)
         : undefined;
       setImportDraft((prev) => {
         if (prev?.previewUrl?.startsWith('blob:')) URL.revokeObjectURL(prev.previewUrl);
@@ -522,7 +523,7 @@ export const TabletopHUD: React.FC<TabletopHUDProps> = ({
     setFetchingUrl(true);
 
     try {
-      const res = await fetch('/api/assets/from-url', {
+      const res = await fetch(apiUrl('/api/assets/from-url'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ url: remoteUrl.trim() }),
@@ -597,7 +598,7 @@ export const TabletopHUD: React.FC<TabletopHUDProps> = ({
     for (let i = 0; i < bytes.length; i += chunkSize) {
       binary += String.fromCharCode(...bytes.subarray(i, i + chunkSize));
     }
-    const res = await fetch('/api/assets', {
+    const res = await fetch(apiUrl('/api/assets'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -914,7 +915,7 @@ export const TabletopHUD: React.FC<TabletopHUDProps> = ({
           if (!/^https?:\/\//i.test(playerTazoUrl.trim())) {
             throw new Error('Informe uma URL HTTP/HTTPS valida para a imagem do Tazo.');
           }
-          const res = await fetch('/api/assets/from-url', {
+          const res = await fetch(apiUrl('/api/assets/from-url'), {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ url: playerTazoUrl.trim() }),
@@ -953,7 +954,7 @@ export const TabletopHUD: React.FC<TabletopHUDProps> = ({
         for (let i = 0; i < bytes.length; i += chunkSize) {
           binary += String.fromCharCode(...bytes.subarray(i, i + chunkSize));
         }
-        const res = await fetch('/api/assets', {
+        const res = await fetch(apiUrl('/api/assets'), {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -1041,7 +1042,7 @@ export const TabletopHUD: React.FC<TabletopHUDProps> = ({
     if (!finalTitle) {
       setLoadingYtInfo(true);
       try {
-        const res = await fetch(`/api/music/info?url=${encodeURIComponent(ytUrlInput.trim())}`);
+        const res = await fetch(apiUrl(`/api/music/info?url=${encodeURIComponent(ytUrlInput.trim())}`));
         if (res.ok) {
           const data = (await res.json()) as { title?: string };
           if (data.title) finalTitle = data.title;
