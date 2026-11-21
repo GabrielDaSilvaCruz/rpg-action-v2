@@ -1,0 +1,68 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id        String      @id @default(uuid())
+  email     String      @unique
+  name      String
+  password  String
+  createdAt DateTime    @default(now())
+  updatedAt DateTime    @updatedAt
+  rooms     Room[]      @relation("MasterRooms")
+  sheets    Character[]
+
+  @@map("users")
+}
+
+model Room {
+  id          String      @id @default(uuid())
+  roomId      String      @unique @default("MESA-01") // Código da mesa (ex: MESA-01)
+  title       String      @default("Mesa de RPG")
+  presetName  String      @default("dungeon-gate")
+  cols        Int         @default(20)
+  rows        Int         @default(20)
+  tiles       Json        @default("{}") // Coordenadas, terrenos e adereços
+  miniatures  Json        @default("{}") // Miniaturas 3D, tokens e fichas
+  annotations Json        @default("{}") // Desenhos e marcações no mapa
+  rulers      Json        @default("{}") // Réguas e medições de distância
+  music       Json?       // Estado da trilha sonora (YouTube sincronizado)
+  recentRolls Json        @default("[]") // Histórico recente de rolagens de dados
+  combat      Json?       // Estado do combate e iniciativa sincronizados
+  masterId    String?
+  master      User?       @relation("MasterRooms", fields: [masterId], references: [id], onDelete: Cascade)
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+
+  @@map("rooms")
+}
+
+model Character {
+  id        String   @id @default(uuid())
+  name      String
+  system    String   @default("dnd5e")
+  data      Json     // Atributos, PV, magias, ataques e equipamentos
+  userId    String?
+  user      User?    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("characters")
+}
+
+model Asset {
+  id          String   @id @default(uuid())
+  name        String
+  format      String   // stl, obj, glb, gltf, png, jpg, webp
+  contentType String
+  url         String
+  size        Int      @default(0)
+  createdAt   DateTime @default(now())
+
+  @@map("assets")
+}

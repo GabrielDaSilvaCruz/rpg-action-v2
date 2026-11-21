@@ -1,0 +1,146 @@
+name: rpg-action-v2
+
+services:
+  # ============================================================================
+  # 🗄️ Banco de Dados Relacional: PostgreSQL
+  # Porta no host: 15432 (evita colisão com instâncias locais do Postgres)
+  # ============================================================================
+  postgres:
+    image: postgres:16-alpine
+    container_name: rpg_v2_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-rpg_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-rpg_secret}
+      POSTGRES_DB: ${POSTGRES_DB:-rpg_action_db}
+    ports:
+      - "${POSTGRES_PORT:-15432}:5432"
+    volumes:
+      - rpg_v2_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-rpg_user} -d ${POSTGRES_DB:-rpg_action_db}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - rpg_v2_network
+
+  # ============================================================================
+  # ⚡ Cache e Sessões em Memória: Redis
+  # Porta no host: 16379 (evita colisão com instâncias locais do Redis)
+  # ============================================================================
+  redis:
+    image: redis:7-alpine
+    container_name: rpg_v2_redis
+    restart: unless-stopped
+    ports:
+      - "${REDIS_PORT:-16379}:6379"
+    volumes:
+      - rpg_v2_redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - rpg_v2_network
+
+  # ============================================================================
+  # ⚙️ Backend: NestJS + Fastify + Prisma + WebSockets (SOLID Architecture)
+  # ============================================================================
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: rpg_v2_backend
+    restart: unless-stopped
+    ports:
+      - "3001:3001"
+    environment:
+      PORT: 3001
+      NODE_ENV: development
+      DATABASE_URL: "postgresql://${POSTGRES_USER:-rpg_user}:${POSTGRES_PASSWORD:-rpg_secret}@postgres:5432/${POSTGRES_DB:-rpg_action_db}?schema=public"
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      ALLOWED_ORIGINS: "http://localhost:3000"
+      JWT_SECRET: "rpg_super_secret_jwt_key_2026"
+      JWT_EXPIRES_IN: "7d"
+      STORAGE_DRIVER: local
+    volumes:
+      - ./backend:/app
+      - /app/node_modules
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - rpg_v2_network
+
+  # ============================================================================
+  # 🎨 Frontend: Next.js 15 (App Router) + React 19 + Three.js (SpireTable 3D)
+  # ============================================================================
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: rpg_v2_frontend
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      NEXT_PUBLIC_BACKEND_URL: "http://localhost:3001"
+      NODE_ENV: development
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+      - /app/.next
+    depends_on:
+      - backend
+    networks:
+      - rpg_v2_network
+
+  # ============================================================================
+  # 🌐 Gateway Proxy: Nginx (Unifica Frontend + Backend WebSocket em 1 porta)
+  # Porta no host: 8080 (perfeito para 1 único túnel ngrok)
+  # ============================================================================
+  gateway:
+    image: nginx:alpine
+    container_name: rpg_v2_gateway
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - frontend
+      - backend
+    networks:
+      - rpg_v2_network
+
+  # ============================================================================
+  # 🚀 Ngrok Tunnel: Expõe a mesa publicamente na Internet automaticamente
+  # ============================================================================
+  ngrok:
+    image: ngrok/ngrok:latest
+    container_name: rpg_v2_ngrok
+    restart: unless-stopped
+    command:
+      - "http"
+      - "gateway:8080"
+    environment:
+      NGROK_AUTHTOKEN: "3L9qjPhesEpHaLSyBdeTTUlk5ZH_4ryW7KLU4ho3h5aNvY6vp"
+    ports:
+      - "4040:4040"
+    depends_on:
+      - gateway
+    networks:
+      - rpg_v2_network
+
+volumes:
+  rpg_v2_postgres_data:
+  rpg_v2_redis_data:
+
+networks:
+  rpg_v2_network:
+    driver: bridge

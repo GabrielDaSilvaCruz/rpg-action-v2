@@ -1,6 +1,0 @@
-{
-  "name": "SpireTable 3D",
-  "description": "Tabuleiro virtual de RPG 3D online estilo TaleSpire com editor de mapas para o Mestre, importador de miniaturas STL, OBJ e glTF/GLB com dimensionamento automatico e movimentacao em tempo real.",
-  "requestFramePermissions": [],
-  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
-}
