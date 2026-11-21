@@ -270,6 +270,20 @@ export class RoomsGateway implements OnGatewayConnection, OnGatewayDisconnect {
         case 'mini:move': {
           const { id, x, z, rotationY } = msg.payload || {};
           if (id) {
+            const isGm = session.user.role === 'gm';
+            const existing = room.miniatures[id];
+            if (existing && !isGm) {
+              const isOwner =
+                !existing.isPropOnly &&
+                !existing.sheet?.isMonster &&
+                existing.ownerName !== '__GM__' &&
+                ((existing.ownerName && existing.ownerName.toLowerCase() === session.user.name.toLowerCase()) ||
+                 (!existing.ownerName && existing.name.toLowerCase() === session.user.name.toLowerCase()) ||
+                 !existing.ownerName);
+              if (!isOwner) {
+                break;
+              }
+            }
             if (!room.miniatures[id]) {
               room.miniatures[id] = {
                 id,

@@ -1535,9 +1535,11 @@ export const TabletopViewport: React.FC<TabletopViewportProps> = ({
         if (gmLayer === 'props' && !mini.isPropOnly) return false;
         return true;
       }
-      if (mini.isPropOnly || mini.ownerName === '__GM__') return false;
-      if (!mini.ownerName) return true;
-      return mini.ownerName.toLowerCase() === u.toLowerCase();
+      if (mini.isPropOnly || mini.ownerName === '__GM__' || mini.sheet?.isMonster) return false;
+      if (mini.ownerName) {
+        return mini.ownerName.toLowerCase() === u.toLowerCase();
+      }
+      return !mini.sheet?.isMonster && (mini.name.toLowerCase() === u.toLowerCase() || mini.ownerName === '');
     };
 
     const handlePointerMove = (e: PointerEvent) => {

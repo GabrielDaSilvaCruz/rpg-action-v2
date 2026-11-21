@@ -142,3 +142,7 @@ volumes:
 networks:
   rpg_v2_network:
     driver: bridge
+    # Subnet fixa: evita que o Docker escolha 172.x, que colide com a rede interna via VPN (ex.: 172.21.0.117)
+    ipam:
+      config:
+        - subnet: 10.200.0.0/24
