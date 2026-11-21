@@ -21,6 +21,61 @@ const stlLoader = new STLLoader();
 const objLoader = new OBJLoader();
 const gltfLoader = new GLTFLoader();
 
+/**
+ * Limpa do cache em memória (RAM/VRAM) todos os modelos 3D e buffers que NÃO estão
+ * atualmente colocados no tabuleiro (RoomState), evitando vazamento de memória e sobrecarga do WebGL.
+ */
+export function clearUnusedModelCache(placedMiniatures?: Record<string, { assetId?: string; remoteUrl?: string }>): {
+  clearedModels: number;
+  clearedBuffers: number;
+} {
+  const activeKeys = new Set<string>();
+
+  if (placedMiniatures) {
+    for (const mini of Object.values(placedMiniatures)) {
+      if (mini.assetId) {
+        activeKeys.add(mini.assetId);
+        activeKeys.add(`cat:${mini.assetId}`);
+        if (mini.assetId.startsWith('cat:')) {
+          activeKeys.add(mini.assetId.replace('cat:', ''));
+        }
+      }
+      if (mini.remoteUrl) {
+        activeKeys.add(mini.remoteUrl);
+      }
+    }
+  }
+
+  let clearedModels = 0;
+  for (const [key, obj] of parsedModelCache.entries()) {
+    if (!activeKeys.has(key)) {
+      obj.traverse((child) => {
+        if ((child as THREE.Mesh).isMesh) {
+          const mesh = child as THREE.Mesh;
+          mesh.geometry?.dispose();
+          if (Array.isArray(mesh.material)) {
+            mesh.material.forEach((m) => m.dispose());
+          } else if (mesh.material) {
+            mesh.material.dispose();
+          }
+        }
+      });
+      parsedModelCache.delete(key);
+      clearedModels++;
+    }
+  }
+
+  let clearedBuffers = 0;
+  for (const key of Array.from(rawAssetCache.keys())) {
+    if (!activeKeys.has(key)) {
+      rawAssetCache.delete(key);
+      clearedBuffers++;
+    }
+  }
+
+  return { clearedModels, clearedBuffers };
+}
+
 export function createFinishMaterial(
   finish: MiniFinish,
   colorHex: string,
@@ -94,9 +149,24 @@ export async function fetchAssetBuffer(
     return buf.slice(0);
   }
 
-  const endpoint = remoteUrl
-    ? apiUrl(`/api/assets/proxy?url=${encodeURIComponent(remoteUrl)}`)
-    : apiUrl(`/api/assets/${encodeURIComponent(assetId!)}`);
+  let endpoint: string;
+  if (remoteUrl) {
+    if (remoteUrl.startsWith('/uploads/') || remoteUrl.startsWith('/api/')) {
+      endpoint = apiUrl(remoteUrl);
+    } else if (/^https?:\/\//i.test(remoteUrl)) {
+      endpoint = apiUrl(`/api/assets/proxy?url=${encodeURIComponent(remoteUrl)}`);
+    } else {
+      endpoint = apiUrl(`/api/assets/${encodeURIComponent(remoteUrl)}`);
+    }
+  } else if (assetId) {
+    if (assetId.startsWith('/uploads/') || assetId.startsWith('/api/')) {
+      endpoint = apiUrl(assetId);
+    } else {
+      endpoint = apiUrl(`/api/assets/${encodeURIComponent(assetId)}`);
+    }
+  } else {
+    throw new Error('Asset sem identificador ou URL.');
+  }
 
   const promise = (async () => {
     let res = await fetch(endpoint).catch(() => null);

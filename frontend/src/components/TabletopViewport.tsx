@@ -94,6 +94,7 @@ interface TabletopViewportProps {
   onSelectMini: (id: string | null) => void;
   onSelectAnnotation: (id: string | null) => void;
   onMoveMini: (id: string, x: number, z: number, rotationY?: number) => void;
+  onDeleteMini?: (id: string) => void;
   onPaintTile: (cell: TileCell) => void;
   onSculptStrokeStart?: () => void;
   onSculptStrokeEnd?: () => void;
@@ -112,7 +113,7 @@ interface MiniVisualEntry {
   targetRotY: number;
   hopProgress: number;
   signature: string;
-  selectionRing: THREE.Mesh;
+  selectionRing: THREE.Object3D;
 }
 
 interface TileVisualEntry {
@@ -183,6 +184,138 @@ function createBeveledTileCapGeometry(
   return geo;
 }
 
+/**
+ * Cria a moldura/cursor com 4 cantoneiras angulares em L estilo Yu-Gi-Oh! Forbidden Memories
+ */
+function createYugiohCornerFrame(size = 1.0, color = 0xfbbf24): THREE.Group {
+  const group = new THREE.Group();
+  const half = (size * 0.98) / 2;
+  const armLen = Math.min(0.28, size * 0.28);
+  const thick = Math.min(0.045, size * 0.045);
+
+  const mat = new THREE.MeshBasicMaterial({
+    color,
+    transparent: true,
+    opacity: 0.95,
+    side: THREE.DoubleSide,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending,
+  });
+
+  const borderMat = new THREE.LineBasicMaterial({
+    color: 0xfef08a,
+    transparent: true,
+    opacity: 0.55,
+  });
+
+  // Fundo suave do quadrado
+  const innerMat = new THREE.MeshBasicMaterial({
+    color: 0xf59e0b,
+    transparent: true,
+    opacity: 0.2,
+    side: THREE.DoubleSide,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending,
+  });
+  const innerPlane = new THREE.Mesh(new THREE.PlaneGeometry(size * 0.96, size * 0.96), innerMat);
+  innerPlane.rotation.x = -Math.PI / 2;
+  innerPlane.position.y = 0.012;
+  group.add(innerPlane);
+
+  // Borda fina perimetral
+  const edges = new THREE.EdgesGeometry(new THREE.PlaneGeometry(size * 0.98, size * 0.98));
+  const borderLine = new THREE.LineSegments(edges, borderMat);
+  borderLine.rotation.x = -Math.PI / 2;
+  borderLine.position.y = 0.015;
+  group.add(borderLine);
+
+  // 4 Cantoneiras angulares em L estilo Yu-Gi-Oh Forbidden Memories
+  const corners = [
+    { cx: -half, cz: -half, sx: 1, sz: 1 },
+    { cx: half, cz: -half, sx: -1, sz: 1 },
+    { cx: -half, cz: half, sx: 1, sz: -1 },
+    { cx: half, cz: half, sx: -1, sz: -1 },
+  ];
+
+  corners.forEach(({ cx, cz, sx, sz }) => {
+    // Barra horizontal do L
+    const hMesh = new THREE.Mesh(new THREE.PlaneGeometry(armLen, thick), mat);
+    hMesh.rotation.x = -Math.PI / 2;
+    hMesh.position.set(cx + (sx * armLen) / 2, 0.02, cz + (sz * thick) / 2);
+    group.add(hMesh);
+
+    // Barra vertical do L
+    const vMesh = new THREE.Mesh(new THREE.PlaneGeometry(thick, armLen), mat);
+    vMesh.rotation.x = -Math.PI / 2;
+    vMesh.position.set(cx + (sx * thick) / 2, 0.02, cz + (sz * armLen) / 2);
+    group.add(vMesh);
+  });
+
+  return group;
+}
+
+function setYugiohFrameColor(group: THREE.Group, colorHex: number) {
+  group.traverse((c) => {
+    if (c instanceof THREE.Mesh && c.material && 'color' in c.material) {
+      (c.material as THREE.MeshBasicMaterial).color.setHex(colorHex);
+    }
+  });
+}
+
+/**
+ * Determina o setor cardeal em que a câmera está olhando no plano XZ (0 a 3).
+ * 0: Norte (-Z)
+ * 1: Leste (+X)
+ * 2: Sul (+Z)
+ * 3: Oeste (-X)
+ */
+function getCameraSector(camera: THREE.Camera): 0 | 1 | 2 | 3 {
+  const dir = new THREE.Vector3();
+  camera.getWorldDirection(dir);
+  dir.y = 0;
+  dir.normalize();
+  let angle = Math.atan2(dir.x, -dir.z); // -PI a +PI
+  let deg = (angle * 180) / Math.PI;
+  if (deg < 0) deg += 360;
+  return (Math.floor(((deg + 45) % 360) / 90) as 0 | 1 | 2 | 3);
+}
+
+/**
+ * Converte a intenção de movimento relativa à tela (Cima/Baixo/Esquerda/Direita)
+ * para o passo no grid discreto (dx, dz).
+ * Em modo de edição ou em vista de topo (zenital), o eixo é rigorosamente FIXO:
+ * Esquerda é sempre -X, Direita é +X, Cima é -Z, Baixo é +Z.
+ * Desta forma, Esquerda NUNCA vai para baixo ou para cima.
+ */
+function getCameraRelativeGridStep(
+  camera: THREE.Camera,
+  screenDx: number, // -1: esquerda na tela, +1: direita na tela
+  screenDz: number, // -1: para cima na tela, +1: para baixo na tela
+  forceFixedAxis = false
+): { dx: number; dz: number } {
+  const dir = new THREE.Vector3();
+  camera.getWorldDirection(dir);
+
+  // Se a câmera estiver em vista de topo (olhando de cima para baixo: dir.y < -0.65)
+  // ou se forceFixedAxis estiver ativo (editando mapa/adicionando coisas):
+  // O eixo é 100% cartesiano fixo!
+  if (forceFixedAxis || dir.y < -0.65) {
+    return { dx: screenDx, dz: screenDz };
+  }
+
+  const sector = getCameraSector(camera);
+  switch (sector) {
+    case 0: // Olhando para o Norte (-Z): Cima = -Z, Baixo = +Z, Esq = -X, Dir = +X
+      return { dx: screenDx, dz: screenDz };
+    case 1: // Olhando para o Leste (+X): Cima = +X, Baixo = -X, Esq = -Z, Dir = +Z
+      return { dx: -screenDz, dz: screenDx };
+    case 2: // Olhando para o Sul (+Z): Cima = +Z, Baixo = -Z, Esq = +X, Dir = -X
+      return { dx: -screenDx, dz: -screenDz };
+    case 3: // Olhando para o Oeste (-X): Cima = -X, Baixo = +X, Esq = +Z, Dir = -Z
+      return { dx: screenDz, dz: -screenDx };
+  }
+}
+
 function detectSoftwareGl(): boolean {
   try {
     const probeCanvas = document.createElement('canvas');
@@ -216,6 +349,7 @@ export const TabletopViewport: React.FC<TabletopViewportProps> = ({
   onSelectMini,
   onSelectAnnotation,
   onMoveMini,
+  onDeleteMini,
   onPaintTile,
   onSculptStrokeStart,
   onSculptStrokeEnd,
@@ -226,6 +360,8 @@ export const TabletopViewport: React.FC<TabletopViewportProps> = ({
   onDismissContextMenu,
 }) => {
   const mountRef = useRef<HTMLDivElement | null>(null);
+  const compassNeedleRef = useRef<HTMLDivElement | null>(null);
+  const compassTextRef = useRef<HTMLSpanElement | null>(null);
   const [contextLost, setContextLost] = useState(false);
 
   // Mutable refs for 60fps loop without recreating WebGLRenderer
@@ -246,6 +382,7 @@ export const TabletopViewport: React.FC<TabletopViewportProps> = ({
     onSelectMini,
     onSelectAnnotation,
     onMoveMini,
+    onDeleteMini,
     onPaintTile,
     onSculptStrokeStart,
     onSculptStrokeEnd,
@@ -272,6 +409,7 @@ export const TabletopViewport: React.FC<TabletopViewportProps> = ({
     onSelectMini,
     onSelectAnnotation,
     onMoveMini,
+    onDeleteMini,
     onPaintTile,
     onSculptStrokeStart,
     onSculptStrokeEnd,
@@ -473,18 +611,8 @@ export const TabletopViewport: React.FC<TabletopViewportProps> = ({
     raycastFloorPlane.position.set(7.5, 0, 7.5);
     scene.add(tilesRoot, minisRoot, annotationsRoot, raycastFloorPlane);
 
-    // Hover Tile Cursor & Movement Path Line
-    const cursorGeo = new THREE.RingGeometry(0.36, 0.46, 4);
-    cursorGeo.rotateZ(Math.PI / 4);
-    cursorGeo.rotateX(-Math.PI / 2);
-    const cursorMat = new THREE.MeshBasicMaterial({
-      color: 0xf59e0b,
-      transparent: true,
-      opacity: 0.85,
-      side: THREE.DoubleSide,
-      depthWrite: false,
-    });
-    const hoverCursor = new THREE.Mesh(cursorGeo, cursorMat);
+    // Cursor de Seleção do Grid Estilo Yu-Gi-Oh! Forbidden Memories
+    const hoverCursor = createYugiohCornerFrame(1.0, 0xfbbf24);
     hoverCursor.visible = false;
     scene.add(hoverCursor);
 
@@ -902,8 +1030,12 @@ export const TabletopViewport: React.FC<TabletopViewportProps> = ({
 
           if (existing.signature !== visualSig) {
             existing.signature = visualSig;
-            const ringScale = mini.footprint * TILE_SIZE * 0.52;
-            existing.selectionRing.scale.set(ringScale, ringScale, 1);
+            existing.group.remove(existing.selectionRing);
+            const selectionRing = createYugiohCornerFrame(mini.footprint * TILE_SIZE, 0xfbbf24);
+            selectionRing.visible = propsRef.current.selectedMiniId === id;
+            selectionRing.userData.isSelectionRing = true;
+            existing.selectionRing = selectionRing;
+            existing.group.add(selectionRing);
             buildMiniGroup(mini, existing.group);
           }
         } else {
@@ -911,19 +1043,7 @@ export const TabletopViewport: React.FC<TabletopViewportProps> = ({
           group.position.set(mini.x, targetY, mini.z);
           group.rotation.y = mini.rotationY;
 
-          const ringGeo = new THREE.RingGeometry(0.84, 0.96, 32);
-          const ringMat = new THREE.MeshBasicMaterial({
-            color: 0xf59e0b,
-            transparent: true,
-            opacity: 0.92,
-            side: THREE.DoubleSide,
-            depthWrite: false,
-          });
-          const selectionRing = new THREE.Mesh(ringGeo, ringMat);
-          selectionRing.rotation.x = -Math.PI / 2;
-          selectionRing.position.y = 0.015;
-          const ringScale = mini.footprint * TILE_SIZE * 0.52;
-          selectionRing.scale.set(ringScale, ringScale, 1);
+          const selectionRing = createYugiohCornerFrame(mini.footprint * TILE_SIZE, 0xfbbf24);
           selectionRing.visible = propsRef.current.selectedMiniId === id;
           selectionRing.userData.isSelectionRing = true;
           group.add(selectionRing);
@@ -1158,8 +1278,8 @@ export const TabletopViewport: React.FC<TabletopViewportProps> = ({
 
     const applyCameraPreset = (preset: CameraPreset) => {
       if (preset === 'top') {
-        cameraTargetPos = new THREE.Vector3(7.5, 22, 9.2);
-        cameraTargetLook = new THREE.Vector3(7.5, 0.2, 7.5);
+        cameraTargetPos = new THREE.Vector3(7.5, 23, 7.505);
+        cameraTargetLook = new THREE.Vector3(7.5, 0, 7.5);
       } else if (preset === 'dramatic') {
         cameraTargetPos = new THREE.Vector3(14.5, 6.8, 15.8);
         cameraTargetLook = new THREE.Vector3(7.5, 1.2, 6.2);
@@ -1306,7 +1426,7 @@ export const TabletopViewport: React.FC<TabletopViewportProps> = ({
         if (pt) {
           hoverCursor.visible = true;
           hoverCursor.position.set(pt.x, pt.y + 0.025, pt.z);
-          (hoverCursor.material as THREE.MeshBasicMaterial).color.setHex(0x22d3ee);
+          setYugiohFrameColor(hoverCursor, 0x22d3ee);
 
           const key = `${pt.x},${pt.z}`;
           if (key !== lastMeasureEndKey) {
@@ -1350,7 +1470,8 @@ export const TabletopViewport: React.FC<TabletopViewportProps> = ({
       const { toolMode: mode, selectedMiniId: selId, roomState: rs } = propsRef.current;
       hoverCursor.visible = true;
       hoverCursor.position.set(cell.x, cell.y + 0.025, cell.z);
-      (hoverCursor.material as THREE.MeshBasicMaterial).color.setHex(
+      setYugiohFrameColor(
+        hoverCursor,
         mode === 'sculpt'
           ? 0x10b981
           : mode === 'annotate'
@@ -1359,46 +1480,11 @@ export const TabletopViewport: React.FC<TabletopViewportProps> = ({
           ? 0x22d3ee
           : selId
           ? 0x38bdf8
-          : 0xf59e0b
+          : 0xfbbf24
       );
 
-      let distCells: number | null = null;
-      if (mode === 'interact' && selId && rs?.miniatures[selId]) {
-        const m = rs.miniatures[selId];
-        const dx = Math.abs(cell.x - m.x);
-        const dz = Math.abs(cell.z - m.z);
-        // D&D 5e / grid Chebyshev + rounded Euclidean movement count
-        distCells = Math.round(Math.max(dx, dz));
-        if (distCells > 0) {
-          const startY = getSurfaceYForCoord(rs, m.x, m.z) + 0.12;
-          const endY = cell.y + 0.12;
-          const midX = (m.x + cell.x) / 2;
-          const midZ = (m.z + cell.z) / 2;
-          const midY = Math.max(startY, endY) + 0.55;
-
-          const pts: THREE.Vector3[] = [];
-          for (let i = 0; i <= 14; i++) {
-            const t = i / 14;
-            const inv = 1 - t;
-            pts.push(
-              new THREE.Vector3(
-                inv * inv * m.x + 2 * inv * t * midX + t * t * cell.x,
-                inv * inv * startY + 2 * inv * t * midY + t * t * endY,
-                inv * inv * m.z + 2 * inv * t * midZ + t * t * cell.z
-              )
-            );
-          }
-          pathLine.geometry.setFromPoints(pts);
-          pathLine.computeLineDistances();
-          pathLine.visible = true;
-        } else {
-          pathLine.visible = false;
-        }
-      } else {
-        pathLine.visible = false;
-      }
-
-      propsRef.current.onHoverInfo({ x: cell.x, z: cell.z, distanceCells: distCells });
+      pathLine.visible = false;
+      propsRef.current.onHoverInfo({ x: cell.x, z: cell.z, distanceCells: null });
     };
 
     const handlePointerDown = (e: PointerEvent) => {
@@ -1452,6 +1538,7 @@ export const TabletopViewport: React.FC<TabletopViewportProps> = ({
           lastPaintedKey = tileKey(cell.x, cell.z);
           paintCellAt(cell.x, cell.z);
         }
+        return;
       }
     };
 
@@ -1490,10 +1577,11 @@ export const TabletopViewport: React.FC<TabletopViewportProps> = ({
         propsRef.current.onSculptStrokeEnd?.();
         return;
       }
+
       if (propsRef.current.isLobby || e.button !== 0) return;
 
       const movedDist = Math.hypot(e.clientX - pointerDownPos.x, e.clientY - pointerDownPos.y);
-      if (movedDist > 6) return; // User was orbiting camera
+      if (movedDist > 6) return; // Usuário estava apenas girando a órbita da câmera
 
       if (propsRef.current.toolMode === 'sculpt' && propsRef.current.role === 'gm') return;
       if (propsRef.current.toolMode === 'measure') return;
@@ -1501,7 +1589,7 @@ export const TabletopViewport: React.FC<TabletopViewportProps> = ({
       updateMouseFromEvent(e);
       _raycaster.setFromCamera(_mouse, camera);
 
-      // 0. If GM is in 'annotate' mode, check existing marker click first, else place new annotation!
+      // 0. Se GM está no modo 'annotate', verifica clique em marcador ou posiciona nova anotação
       if (propsRef.current.toolMode === 'annotate' && propsRef.current.role === 'gm') {
         const annObjects = Array.from(annotationEntries.values()).map((v) => v.group);
         const annHits = _raycaster.intersectObjects(annObjects, true);
@@ -1527,7 +1615,7 @@ export const TabletopViewport: React.FC<TabletopViewportProps> = ({
         return;
       }
 
-      // 1. Check if user clicked a miniature
+      // 1. Verifica se usuário clicou diretamente em uma miniatura (seleção/desseleção limpa)
       const miniObjects = Array.from(miniEntries.values()).map((v) => v.group);
       const miniHits = _raycaster.intersectObjects(miniObjects, true);
       if (miniHits.length > 0) {
@@ -1539,16 +1627,22 @@ export const TabletopViewport: React.FC<TabletopViewportProps> = ({
         if (clickedId) {
           if (propsRef.current.selectedMiniId === clickedId) {
             propsRef.current.onSelectMini(null);
+            audioSynth.playMiniDrop();
           } else {
             propsRef.current.onSelectMini(clickedId);
             propsRef.current.onSelectAnnotation(null);
             audioSynth.playMiniPickup();
+            hoverCursor.scale.set(1.2, 1, 1.2);
+            const m = propsRef.current.roomState?.miniatures[clickedId];
+            if (m) {
+              lastActiveCell = { x: Math.floor(m.x), z: Math.floor(m.z) };
+            }
           }
           return;
         }
       }
 
-      // 1b. If GM clicks an existing annotation marker while in interact mode, select it
+      // 1b. Se GM clica em anotação existente no modo interagir
       if (propsRef.current.role === 'gm') {
         const annObjects = Array.from(annotationEntries.values()).map((v) => v.group);
         const annHits = _raycaster.intersectObjects(annObjects, true);
@@ -1567,33 +1661,11 @@ export const TabletopViewport: React.FC<TabletopViewportProps> = ({
         }
       }
 
-      // 2. Otherwise check if user clicked a grid cell while a miniature is selected -> MOVE IT
+      // Clicar fora ou em célula vazia desseleciona a miniatura sem movê-la pelo mouse
       const selId = propsRef.current.selectedMiniId;
-      const rs = propsRef.current.roomState;
-      if (selId && rs?.miniatures[selId]) {
-        const mini = rs.miniatures[selId];
-        const cell = raycastGridCell();
-        if (cell) {
-          if (!canUserControlMini(mini)) {
-            return;
-          }
-          // Even-footprint creatures (2x2, 4x4) align cleanly to .5 intersections
-          const offset = mini.footprint % 2 === 0 ? 0.5 : 0;
-          const targetX = Math.max(0, Math.min(15.5, cell.x + offset));
-          const targetZ = Math.max(0, Math.min(15.5, cell.z + offset));
-          const angle = Math.atan2(targetX - mini.x, targetZ - mini.z);
-          const nextRot =
-            Math.hypot(targetX - mini.x, targetZ - mini.z) > 0.1 ? angle : mini.rotationY;
-
-          propsRef.current.onMoveMini(mini.id, targetX, targetZ, nextRot);
-          audioSynth.playMiniDrop();
-          return;
-        }
-      }
-
-      // Clicking void deselects
       if (selId) {
         propsRef.current.onSelectMini(null);
+        audioSynth.playMiniDrop();
       }
     };
 
@@ -1614,6 +1686,7 @@ export const TabletopViewport: React.FC<TabletopViewportProps> = ({
         }
         if (propsRef.current.selectedMiniId) {
           propsRef.current.onSelectMini(null);
+          audioSynth.playMiniDrop();
         }
         return;
       }
@@ -1623,133 +1696,164 @@ export const TabletopViewport: React.FC<TabletopViewportProps> = ({
       const maxCols = rs?.cols || 20;
       const maxRows = rs?.rows || 20;
 
-      // 1. SE UMA MINIATURA OU OBJETO ESTIVER SELECIONADO: MOVER COM AS SETAS OU WASD
-      if (selId && rs?.miniatures[selId]) {
-        const mini = rs.miniatures[selId];
-        if (canUserControlMini(mini)) {
-          let dx = 0;
-          let dz = 0;
+      // ========================================================================
+      // 🎮 MOVIMENTAÇÃO DE GRID ESTILO YU-GI-OH! FORBIDDEN MEMORIES
+      // ADAPTADA RELATIVAMENTE À PERSPECTIVA DA CÂMERA (SCREEN-ALIGNED D-PAD)
+      // ========================================================================
+      let screenDx = 0;
+      let screenDz = 0;
 
-          if (e.key === 'ArrowUp' || e.key === 'w' || e.key === 'W') {
-            dz = -1;
-          } else if (e.key === 'ArrowDown' || e.key === 's' || e.key === 'S') {
-            dz = 1;
-          } else if (e.key === 'ArrowLeft' || e.key === 'a' || e.key === 'A') {
-            dx = -1;
-          } else if (e.key === 'ArrowRight' || e.key === 'd' || e.key === 'D') {
-            dx = 1;
-          }
+      if (e.key === 'ArrowUp' || e.key === 'w' || e.key === 'W') {
+        screenDz = -1; // Cima / Frente na tela
+      } else if (e.key === 'ArrowDown' || e.key === 's' || e.key === 'S') {
+        screenDz = 1;  // Baixo / Trás na tela
+      } else if (e.key === 'ArrowLeft' || e.key === 'a' || e.key === 'A') {
+        screenDx = -1; // Esquerda na tela
+      } else if (e.key === 'ArrowRight' || e.key === 'd' || e.key === 'D') {
+        screenDx = 1;  // Direita na tela
+      }
 
-          if (dx !== 0 || dz !== 0) {
-            e.preventDefault();
-            const offset = mini.footprint % 2 === 0 ? 0.5 : 0;
-            const targetX = Math.max(0, Math.min(maxCols - 1, Math.round(mini.x + dx) + offset));
-            const targetZ = Math.max(0, Math.min(maxRows - 1, Math.round(mini.z + dz) + offset));
+      let dx = 0;
+      let dz = 0;
+
+      if (screenDx !== 0 || screenDz !== 0) {
+        const isEditing = propsRef.current.toolMode === 'sculpt';
+        const step = getCameraRelativeGridStep(camera, screenDx, screenDz, isEditing);
+        dx = step.dx;
+        dz = step.dz;
+      }
+
+      // 1. MOVIMENTO DISCRETO COM SETAS DO TECLADO (PULO EXATO CASA A CASA)
+      if (dx !== 0 || dz !== 0) {
+        e.preventDefault();
+
+        // CASO A: HÁ UM OBJETO DE CENÁRIO OU MINIATURA SELECIONADO NA MÃO
+        if (selId && rs?.miniatures[selId]) {
+          const mini = rs.miniatures[selId];
+          if (canUserControlMini(mini)) {
+            const isEven = mini.footprint % 2 === 0;
+            const currentTileX = isEven ? Math.floor(mini.x) + 0.5 : Math.round(mini.x);
+            const currentTileZ = isEven ? Math.floor(mini.z) + 0.5 : Math.round(mini.z);
+
+            const minCoord = isEven ? 0.5 : 0;
+            const maxCoordX = isEven ? maxCols - 0.5 : maxCols - 1;
+            const maxCoordZ = isEven ? maxRows - 0.5 : maxRows - 1;
+
+            const targetX = Math.max(minCoord, Math.min(maxCoordX, currentTileX + dx));
+            const targetZ = Math.max(minCoord, Math.min(maxCoordZ, currentTileZ + dz));
 
             if (targetX !== mini.x || targetZ !== mini.z) {
-              // Mantém a rotação exata da miniatura sem girar ao mover com setas (alinhamento preciso)
+              // Mantém a rotação e move 1 casa exata (snap perfeito Yu-Gi-Oh)
               propsRef.current.onMoveMini(mini.id, targetX, targetZ, mini.rotationY);
-              audioSynth.playMiniDrop();
+              audioSynth.playCursorMove();
               lastActiveCell = { x: Math.floor(targetX), z: Math.floor(targetZ) };
+
+              const surfY = getSurfaceYForCoord(rs, lastActiveCell.x, lastActiveCell.z);
+              hoverCursor.visible = true;
+              hoverCursor.position.set(lastActiveCell.x, surfY + 0.015, lastActiveCell.z);
+              hoverCursor.scale.set(1.15, 1, 1.15);
+              propsRef.current.onHoverInfo({ x: lastActiveCell.x, z: lastActiveCell.z, distanceCells: null });
             }
             return;
           }
+        }
 
-          if (e.key === 'q' || e.key === 'Q') {
-            e.preventDefault();
-            propsRef.current.onMoveMini(mini.id, mini.x, mini.z, mini.rotationY + Math.PI / 4);
+        // CASO B: NENHUM OBJETO SELECIONADO -> MOVE O CURSOR DO TABULEIRO (SNAP DISCRETO DE CASA EM CASA)
+        if (!lastActiveCell) {
+          lastActiveCell = { x: Math.floor(maxCols / 2), z: Math.floor(maxRows / 2) };
+        }
+        const nextX = Math.max(0, Math.min(maxCols - 1, lastActiveCell.x + dx));
+        const nextZ = Math.max(0, Math.min(maxRows - 1, lastActiveCell.z + dz));
+
+        if (nextX !== lastActiveCell.x || nextZ !== lastActiveCell.z) {
+          lastActiveCell = { x: nextX, z: nextZ };
+          const surfY = getSurfaceYForCoord(rs, nextX, nextZ);
+          hoverCursor.visible = true;
+          hoverCursor.position.set(nextX, surfY + 0.015, nextZ);
+          hoverCursor.scale.set(1.15, 1, 1.15);
+          audioSynth.playCursorMove();
+          propsRef.current.onHoverInfo({ x: nextX, z: nextZ, distanceCells: null });
+        }
+        return;
+      }
+
+      // 2. ESPAÇO OU ENTER: PEGAR / SOLTAR (PICKUP & DROP ESTILO FORBIDDEN MEMORIES)
+      if (e.key === ' ' || e.key === 'Enter') {
+        e.preventDefault();
+
+        // Se tem objeto selecionado -> SOLTA / FIXA NO CHÃO
+        if (selId && rs?.miniatures[selId]) {
+          propsRef.current.onSelectMini(null);
+          audioSynth.playMiniDrop();
+          return;
+        }
+
+        // Se NÃO tem objeto selecionado -> PEGA O OBJETO NA CASA DO CURSOR
+        if (lastActiveCell && rs) {
+          const cellX = lastActiveCell.x;
+          const cellZ = lastActiveCell.z;
+
+          // Procura miniatura ou prop 3D na casa
+          const foundMini = Object.values(rs.miniatures).find((m) => {
+            const isEven = m.footprint % 2 === 0;
+            const mx = isEven ? Math.floor(m.x) : Math.round(m.x);
+            const mz = isEven ? Math.floor(m.z) : Math.round(m.z);
+            return mx === cellX && mz === cellZ;
+          });
+
+          if (foundMini && canUserControlMini(foundMini)) {
+            propsRef.current.onSelectMini(foundMini.id);
+            audioSynth.playMiniPickup();
             return;
-          } else if (e.key === 'e' || e.key === 'E') {
+          }
+        }
+        return;
+      }
+
+      // 3. ROTAÇÃO DE 90º EXATA COM R, E ou Q (PARA ALINHAR MUROS, MESAS E CENÁRIOS PERFEITAMENTE)
+      if (selId && rs?.miniatures[selId]) {
+        const mini = rs.miniatures[selId];
+        if (canUserControlMini(mini)) {
+          if (e.key === 'e' || e.key === 'E' || e.key === 'r' || e.key === 'R') {
             e.preventDefault();
-            propsRef.current.onMoveMini(mini.id, mini.x, mini.z, mini.rotationY - Math.PI / 4);
+            const nextRot = Math.round((mini.rotationY + Math.PI / 2) / (Math.PI / 2)) * (Math.PI / 2);
+            propsRef.current.onMoveMini(mini.id, mini.x, mini.z, nextRot);
+            audioSynth.playCursorMove();
             return;
+          } else if (e.key === 'q' || e.key === 'Q') {
+            e.preventDefault();
+            const nextRot = Math.round((mini.rotationY - Math.PI / 2) / (Math.PI / 2)) * (Math.PI / 2);
+            propsRef.current.onMoveMini(mini.id, mini.x, mini.z, nextRot);
+            audioSynth.playCursorMove();
+            return;
+          } else if (e.key === 'Delete' || e.key === 'Backspace') {
+            if (propsRef.current.role === 'gm' || mini.ownerName === propsRef.current.userName) {
+              e.preventDefault();
+              propsRef.current.onDeleteMini(mini.id);
+              propsRef.current.onSelectMini(null);
+              audioSynth.playMiniDrop();
+              return;
+            }
           }
         }
       }
 
-      // 2. SE NENHUMA MINIATURA ESTIVER SELECIONADA: MOVER CENÁRIOS, MUROS E ADEREÇOS COM AS SETAS DO TECLADO
-      if (propsRef.current.role === 'gm') {
-        const isArrowKey = ['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.key);
-
-        if (isArrowKey) {
-          e.preventDefault();
-          let dx = 0;
-          let dz = 0;
-          if (e.key === 'ArrowUp') dz = -1;
-          else if (e.key === 'ArrowDown') dz = 1;
-          else if (e.key === 'ArrowLeft') dx = -1;
-          else if (e.key === 'ArrowRight') dx = 1;
-
-          if (!lastActiveCell) {
-            lastActiveCell = { x: Math.floor(maxCols / 2), z: Math.floor(maxRows / 2) };
-          }
-
-          const curX = lastActiveCell.x;
-          const curZ = lastActiveCell.z;
-          const nextX = Math.max(0, Math.min(maxCols - 1, curX + dx));
-          const nextZ = Math.max(0, Math.min(maxRows - 1, curZ + dz));
-
-          if (nextX !== curX || nextZ !== curZ) {
-            const oldKey = tileKey(curX, curZ);
-            const oldCell = rs?.tiles[oldKey];
-
-            // Se a célula anterior tinha um adereço ou muro, move o objeto para a nova célula!
-            if (oldCell && oldCell.prop !== 'none') {
-              // Limpa a célula de origem mantendo terreno
-              propsRef.current.onPaintTile({
-                ...oldCell,
-                prop: 'none',
-                propRotation: 0,
-              });
-
-              // Posiciona na nova célula de destino
-              const newKey = tileKey(nextX, nextZ);
-              const targetCell = rs?.tiles[newKey];
-              propsRef.current.onPaintTile({
-                x: nextX,
-                z: nextZ,
-                terrain: targetCell?.terrain || oldCell.terrain,
-                elevation: targetCell?.elevation ?? oldCell.elevation,
-                prop: oldCell.prop,
-                propRotation: oldCell.propRotation,
-              });
-              audioSynth.playTilePlace();
-            } else if (propsRef.current.toolMode === 'sculpt') {
-              // Se estiver no modo de colocação de blocos/muros, aplica o bloco no novo quadrado
-              paintCellAt(nextX, nextZ);
-            }
-
-            // Atualiza a posição do cursor visual
-            lastActiveCell = { x: nextX, z: nextZ };
-            const surfY = getSurfaceYForCoord(rs, nextX, nextZ);
-            hoverCursor.visible = true;
-            hoverCursor.position.set(nextX, surfY + 0.025, nextZ);
-            propsRef.current.onHoverInfo({ x: nextX, z: nextZ, distanceCells: null });
-          }
-          return;
-        }
-
-        // Rotação do Muro / Adereço com 'R' ou 'r'
-        if ((e.key === 'r' || e.key === 'R') && lastActiveCell) {
-          const k = tileKey(lastActiveCell.x, lastActiveCell.z);
-          const cell = rs?.tiles[k];
-          if (cell && cell.prop !== 'none') {
+      // 4. ROTAÇÃO OU EXCLUSÃO DE ADEREÇO DE TERRENO (SE NÃO FOR MINIATURA 3D)
+      if (propsRef.current.role === 'gm' && lastActiveCell && rs) {
+        const k = tileKey(lastActiveCell.x, lastActiveCell.z);
+        const cell = rs.tiles[k];
+        if (cell && cell.prop !== 'none') {
+          if (e.key === 'r' || e.key === 'R') {
             e.preventDefault();
             const nextRot = ((cell.propRotation || 0) + 1) % 4;
             propsRef.current.onPaintTile({
               ...cell,
               propRotation: nextRot,
             });
-            audioSynth.playMiniDrop();
+            audioSynth.playCursorMove();
             return;
           }
-        }
-
-        // Deletar o adereço/muro da célula ativa com Delete ou Backspace
-        if ((e.key === 'Delete' || e.key === 'Backspace') && lastActiveCell) {
-          const k = tileKey(lastActiveCell.x, lastActiveCell.z);
-          const cell = rs?.tiles[k];
-          if (cell && cell.prop !== 'none') {
+          if (e.key === 'Delete' || e.key === 'Backspace') {
             e.preventDefault();
             propsRef.current.onPaintTile({
               ...cell,
@@ -2062,6 +2166,33 @@ export const TabletopViewport: React.FC<TabletopViewportProps> = ({
         turnHighlightGroup.visible = false;
       }
 
+      // Animação de bounce suave do cursor de seleção Yu-Gi-Oh
+      hoverCursor.scale.lerp(new THREE.Vector3(1, 1, 1), Math.min(1, dt * 14));
+
+      // Atualiza bússola tática e leitura de orientação da câmera (sem re-render no React)
+      const camDirFull = new THREE.Vector3();
+      camera.getWorldDirection(camDirFull);
+      const isTopDown = camDirFull.y < -0.65;
+
+      const camDir = new THREE.Vector3(camDirFull.x, 0, camDirFull.z);
+      camDir.normalize();
+      let camAngle = Math.atan2(camDir.x, -camDir.z);
+      let camDeg = (camAngle * 180) / Math.PI;
+      if (camDeg < 0) camDeg += 360;
+
+      if (compassNeedleRef.current) {
+        compassNeedleRef.current.style.transform = `rotate(${-camDeg}deg)`;
+      }
+      if (compassTextRef.current) {
+        if (isTopDown || propsRef.current.toolMode === 'sculpt') {
+          compassTextRef.current.innerText = 'Topo (Eixo Fixo)';
+        } else {
+          const sector = Math.floor(((camDeg + 45) % 360) / 90);
+          const sectorNames = ['Norte (-Z)', 'Leste (+X)', 'Sul (+Z)', 'Oeste (-X)'];
+          compassTextRef.current.innerText = sectorNames[sector];
+        }
+      }
+
       renderer.render(scene, camera);
 
       if (isSoftwareGl) {
@@ -2174,13 +2305,64 @@ export const TabletopViewport: React.FC<TabletopViewportProps> = ({
             : 'cursor-grab active:cursor-grabbing'
         }`}
       />
+
+      {/* 🧭 Bússola Tática & Orientação Dinâmica de Câmera */}
+      {!isLobby && (
+        <div className="absolute top-3 left-3 pointer-events-none z-10 flex flex-col gap-1.5 select-none animate-in fade-in duration-300">
+          <div className="flex items-center gap-2.5 px-3 py-1.5 rounded-lg bg-[#0e121a]/90 border border-stone-700/60 shadow-xl backdrop-blur-md text-xs text-stone-300">
+            {/* Agulha da Bússola 3D */}
+            <div className="relative w-6 h-6 flex items-center justify-center shrink-0 bg-[#161d2a] rounded-full border border-stone-600/50 shadow-inner">
+              <div
+                ref={compassNeedleRef}
+                className="w-full h-full flex items-center justify-center"
+              >
+                <div className="w-1.5 h-3 bg-gradient-to-t from-red-600 to-red-400 rounded-t-sm shadow-[0_0_6px_rgba(239,68,68,0.7)]" />
+                <div className="w-1.5 h-3 bg-gradient-to-b from-stone-500 to-stone-300 rounded-b-sm absolute" />
+              </div>
+            </div>
+            <div className="flex flex-col">
+              <div className="flex items-center gap-1.5">
+                <span className="text-[10px] font-semibold text-amber-400 tracking-wider uppercase">Câmera:</span>
+                <span ref={compassTextRef} className="text-amber-300 font-mono text-[11px] font-medium">Norte (-Z)</span>
+              </div>
+              <span className="text-[10px] text-stone-400">
+                [Setas/WASD] movem na direção da sua tela
+              </span>
+            </div>
+          </div>
+
+          {/* Dica de Atalhos do Modo Tático quando miniatura/objeto está selecionado */}
+          {selectedMiniId && roomState?.miniatures[selectedMiniId] && (
+            <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-[#111928]/95 border border-sky-500/50 shadow-lg backdrop-blur-md text-xs text-sky-200">
+              <span className="w-2 h-2 rounded-full bg-sky-400 animate-ping shrink-0" />
+              <div className="flex items-center gap-1.5 flex-wrap">
+                <span className="font-semibold text-sky-300">
+                  {roomState.miniatures[selectedMiniId].name}
+                </span>
+                <span className="text-stone-500">|</span>
+                <span className="text-stone-300">
+                  Setas/WASD: Movem na visão da tela · Q/E/R: Giram 90° · Espaço/Enter: Fixa no chão
+                </span>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
       {contextLost && (
         <div className="absolute inset-0 flex items-center justify-center bg-[#0d1015]/95 z-50">
-          <div className="max-w-md p-6 border border-stone-700/60 bg-[#141820] rounded-xl text-center">
+          <div className="max-w-md p-6 border border-stone-700/60 bg-[#141820] rounded-xl text-center shadow-2xl">
             <h2 className="font-display text-lg text-amber-400 mb-2">Contexto WebGL pausado</h2>
-            <p className="text-sm text-stone-300">
-              O navegador suspendeu a renderizacao 3D temporariamente. Recarregue a pagina para retomar a mesa.
+            <p className="text-sm text-stone-300 mb-4">
+              O navegador suspendeu a renderizacao 3D temporariamente. O cache e contextos foram otimizados.
             </p>
+            <button
+              type="button"
+              onClick={() => window.location.reload()}
+              className="px-4 py-2 bg-amber-500 hover:bg-amber-400 text-stone-950 font-semibold text-sm rounded-lg shadow-lg cursor-pointer transition-colors"
+            >
+              Recarregar Mesa Agora
+            </button>
           </div>
         </div>
       )}

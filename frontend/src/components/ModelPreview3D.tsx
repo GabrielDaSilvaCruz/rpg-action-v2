@@ -14,6 +14,26 @@ import {
   parseRawModel,
 } from '../engine/modelNormalizer';
 import { createMiniBase } from '../engine/proceduralModels';
+import { apiUrl } from '../utils/backendUrl';
+
+// Singleton compartilhado de renderização WebGL para previews:
+// Garante que NUNCA sejam criados mais de 1 contexto WebGL para prévias 3D,
+// evitando que o Chrome exceda o limite de 16 contextos e derrube o tabuleiro principal.
+let sharedPreviewRenderer: THREE.WebGLRenderer | null = null;
+
+function getSharedPreviewRenderer(): THREE.WebGLRenderer {
+  if (!sharedPreviewRenderer) {
+    sharedPreviewRenderer = new THREE.WebGLRenderer({
+      antialias: true,
+      alpha: false,
+      powerPreference: 'low-power',
+    });
+    sharedPreviewRenderer.toneMapping = THREE.ACESFilmicToneMapping;
+    sharedPreviewRenderer.toneMappingExposure = 1.15;
+    sharedPreviewRenderer.outputColorSpace = THREE.SRGBColorSpace;
+  }
+  return sharedPreviewRenderer;
+}
 
 interface ModelPreview3DProps {
   format: ModelFormat;
@@ -74,12 +94,12 @@ export const ModelPreview3D: React.FC<ModelPreview3DProps> = ({
     scene.background = new THREE.Color('#0c1018');
 
     const camera = new THREE.PerspectiveCamera(36, 1, 0.05, 60);
-    const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false });
+    const renderer = getSharedPreviewRenderer();
     renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
     renderer.setSize(sizePx, sizePx);
-    renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    renderer.toneMappingExposure = 1.15;
-    renderer.outputColorSpace = THREE.SRGBColorSpace;
+    if (renderer.domElement.parentElement && renderer.domElement.parentElement !== host) {
+      renderer.domElement.parentElement.removeChild(renderer.domElement);
+    }
     host.innerHTML = '';
     host.appendChild(renderer.domElement);
 
@@ -214,6 +234,7 @@ export const ModelPreview3D: React.FC<ModelPreview3DProps> = ({
       turret.traverse((child) => {
         if ((child as THREE.Mesh).isMesh) {
           const mesh = child as THREE.Mesh;
+          mesh.geometry?.dispose();
           if (Array.isArray(mesh.material)) {
             mesh.material.forEach((m) => m.dispose());
           } else if (mesh.material) {
@@ -225,7 +246,9 @@ export const ModelPreview3D: React.FC<ModelPreview3DProps> = ({
       (tilePad.material as THREE.Material).dispose();
       gridEdges.geometry.dispose();
       (gridEdges.material as THREE.Material).dispose();
-      renderer.dispose();
+      hemi.dispose();
+      key.dispose();
+      rim.dispose();
       if (host.contains(canvasEl)) {
         host.removeChild(canvasEl);
       }
@@ -248,15 +271,25 @@ export const ModelPreview3D: React.FC<ModelPreview3DProps> = ({
   ]);
 
   if (format === 'image' || imagePreviewUrl) {
+    const imgSrc =
+      imagePreviewUrl ||
+      (remoteUrl
+        ? remoteUrl.startsWith('http')
+          ? apiUrl(`/api/assets/proxy?url=${encodeURIComponent(remoteUrl)}`)
+          : apiUrl(remoteUrl)
+        : assetId
+        ? apiUrl(`/api/assets/${encodeURIComponent(assetId)}`)
+        : null);
+
     return (
       <div
         className={`relative flex items-center justify-center rounded-xl bg-[#0c1018] border border-stone-700/80 overflow-hidden shrink-0 ${className}`}
         style={{ width: sizePx, height: sizePx }}
         title={label || 'Previa do Tazo'}
       >
-        {imagePreviewUrl ? (
+        {imgSrc ? (
           <img
-            src={imagePreviewUrl}
+            src={imgSrc}
             alt={label || 'Tazo'}
             className="w-4/5 h-4/5 rounded-full object-cover border-[3px] shadow-lg bg-[#141923]"
             style={{ borderColor: color || '#d97706' }}

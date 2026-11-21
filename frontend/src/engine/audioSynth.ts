@@ -15,6 +15,24 @@ class AudioSynth {
     return this.ctx;
   }
 
+  /** Som de tick/snap do cursor estilo Yu-Gi-Oh Forbidden Memories */
+  public playCursorMove() {
+    const ctx = this.ensureContext();
+    if (!ctx || this.muted) return;
+    const now = ctx.currentTime;
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.type = 'triangle';
+    osc.frequency.setValueAtTime(620, now);
+    osc.frequency.exponentialRampToValueAtTime(840, now + 0.035);
+    gain.gain.setValueAtTime(0.08, now);
+    gain.gain.exponentialRampToValueAtTime(0.001, now + 0.04);
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    osc.start(now);
+    osc.stop(now + 0.04);
+  }
+
   public playTilePlace() {
     const ctx = this.ensureContext();
     if (!ctx) return;

@@ -73,6 +73,7 @@ import {
   fetchAssetBuffer,
   normalizeAndDimensionModel,
   parseRawModel,
+  clearUnusedModelCache,
 } from '../engine/modelNormalizer';
 import { uploadImageFileAsTazoAsset } from '../engine/tazoTokenBuilder';
 import {
@@ -340,6 +341,7 @@ export const TabletopHUD: React.FC<TabletopHUDProps> = ({
   const [playerCreateError, setPlayerCreateError] = useState<string | null>(null);
   const playerFileInputRef = useRef<HTMLInputElement | null>(null);
   const playerImageInputRef = useRef<HTMLInputElement | null>(null);
+  const [cacheNotice, setCacheNotice] = useState<string | null>(null);
 
   // YouTube Music DJ state (GM)
   const [ytUrlInput, setYtUrlInput] = useState('');
@@ -689,6 +691,7 @@ export const TabletopHUD: React.FC<TabletopHUDProps> = ({
 
       onCreateMini(newMini);
       onSelectMini(newMini.id);
+      onCameraPreset('top');
       clearImportDraft();
       setGmTab('scale');
     } catch (err) {
@@ -708,6 +711,10 @@ export const TabletopHUD: React.FC<TabletopHUDProps> = ({
     const suggestedTpl = MONSTER_SHEET_TEMPLATES.find((t) => t.catalogAssetId === item.id);
     const startHp = suggestedTpl ? suggestedTpl.suggestedHp : isMonster ? 40 : 35;
 
+    const isEven = item.footprint % 2 === 0;
+    const spawnX = hoverInfo ? (isEven ? Math.floor(hoverInfo.x) + 0.5 : Math.round(hoverInfo.x)) : (isEven ? 7.5 : 7);
+    const spawnZ = hoverInfo ? (isEven ? Math.floor(hoverInfo.z) + 0.5 : Math.round(hoverInfo.z)) : (isEven ? 7.5 : 8);
+
     const newMini: MiniatureData = {
       id: `mini-${crypto.randomUUID().slice(0, 8)}`,
       name: item.name,
@@ -715,8 +722,8 @@ export const TabletopHUD: React.FC<TabletopHUDProps> = ({
       assetId: `cat:${item.id}`,
       assetName: item.name,
       remoteUrl: item.url,
-      x: 7 + offset,
-      z: 8 + offset,
+      x: spawnX,
+      z: spawnZ,
       rotationY: item.isPropOnly ? 0 : Math.PI,
       footprint: item.footprint,
       scaleMultiplier: item.scaleMultiplier,
@@ -734,6 +741,8 @@ export const TabletopHUD: React.FC<TabletopHUDProps> = ({
     onCreateMini(newMini);
     onSelectMini(newMini.id);
     onSetToolMode('interact');
+    onCameraPreset('top');
+    clearUnusedModelCache({ ...roomState?.miniatures, [newMini.id]: newMini });
   };
 
   const applyCatalogAssetToSelected = (item: CuratedAssetItem, overrideFinish?: MiniFinish) => {
@@ -822,6 +831,8 @@ export const TabletopHUD: React.FC<TabletopHUDProps> = ({
     onCreateMini(newMini);
     onSelectMini(newMini.id);
     onSetToolMode('interact');
+    onCameraPreset('top');
+    clearUnusedModelCache({ ...roomState?.miniatures, [newMini.id]: newMini });
     setNewMonsterName('');
     setNewMonsterTazoFile(null);
     if (newMonsterTazoPreview?.startsWith('blob:')) {
@@ -898,6 +909,8 @@ export const TabletopHUD: React.FC<TabletopHUDProps> = ({
     onCreateMini(newMini);
     onSelectMini(newMini.id);
     onSetToolMode('interact');
+    onCameraPreset('top');
+    clearUnusedModelCache({ ...roomState?.miniatures, [newMini.id]: newMini });
     setGmHeroName('');
     setGmHeroTazoFile(null);
     onOpenSheet(newMini.id);
@@ -1529,6 +1542,7 @@ export const TabletopHUD: React.FC<TabletopHUDProps> = ({
                       onClick={() => {
                         onSetToolMode('sculpt');
                         setGmTab('map');
+                        onCameraPreset('top');
                       }}
                       className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md transition-colors whitespace-nowrap cursor-pointer ${
                         toolMode === 'sculpt'
@@ -1907,9 +1921,29 @@ export const TabletopHUD: React.FC<TabletopHUDProps> = ({
                                 </button>
                               ))}
                             </div>
-                            <span className="text-[11px] text-stone-400">
-                              Clique para pre-visualizar em 3D antes de colocar ou aplicar no monstro
-                            </span>
+                            <div className="flex flex-wrap items-center justify-between gap-2 pt-0.5">
+                              <span className="text-[11px] text-stone-400">
+                                Clique para pré-visualizar em 3D antes de colocar no mapa
+                              </span>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  const res = clearUnusedModelCache(roomState?.miniatures);
+                                  setCacheNotice(`Cache limpo: ${res.clearedModels} modelos e ${res.clearedBuffers} arquivos liberados da memória.`);
+                                  setTimeout(() => setCacheNotice(null), 3500);
+                                }}
+                                title="Libera da memória modelos 3D que foram visualizados mas não foram escolhidos"
+                                className="flex items-center gap-1.5 px-2 py-0.5 text-[11px] bg-[#1a202c] hover:bg-stone-700 border border-stone-600 rounded text-stone-300 hover:text-amber-300 cursor-pointer transition-colors"
+                              >
+                                <Trash2 className="w-3 h-3 text-stone-400" />
+                                <span>Limpar Cache</span>
+                              </button>
+                            </div>
+                            {cacheNotice && (
+                              <div className="text-[11px] text-emerald-400 bg-emerald-950/50 border border-emerald-500/40 rounded px-2.5 py-1 animate-in fade-in">
+                                {cacheNotice}
+                              </div>
+                            )}
                           </div>
 
                           <div className="flex items-center gap-1.5 overflow-x-auto pb-1">

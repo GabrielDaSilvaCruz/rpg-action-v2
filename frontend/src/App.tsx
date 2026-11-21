@@ -1518,6 +1518,7 @@ export default function App() {
         onSelectMini={setSelectedMiniId}
         onSelectAnnotation={setSelectedAnnotationId}
         onMoveMini={handleMoveMini}
+        onDeleteMini={handleDeleteMini}
         onPaintTile={handlePaintTile}
         onSculptStrokeStart={handleSculptStrokeStart}
         onSculptStrokeEnd={handleSculptStrokeEnd}
