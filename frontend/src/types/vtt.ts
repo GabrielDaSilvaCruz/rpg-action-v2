@@ -1,5 +1,7 @@
 export type Role = 'gm' | 'player';
 
+export type GmSelectionLayer = 'all' | 'characters' | 'props';
+
 export type TerrainKind =
   | 'void'
   | 'stone'
@@ -130,6 +132,10 @@ export interface RoomUser {
   name: string;
   role: Role;
   color: string;
+  characterId?: string;
+  micMuted?: boolean;
+  videoOff?: boolean;
+  speaking?: boolean;
 }
 
 export interface DiceRollEvent {
@@ -252,7 +258,34 @@ export function getTileSurfaceY(tile?: TileCell): number {
 
 // Client -> Server WebSocket events
 export type ClientMessage =
-  | { type: 'user:join'; payload: { name: string; role: Role; color: string } }
+  | {
+      type: 'user:join';
+      payload: {
+        id?: string;
+        name: string;
+        role: Role;
+        color: string;
+        characterId?: string;
+        micMuted?: boolean;
+        videoOff?: boolean;
+      };
+    }
+  | {
+      type: 'webrtc:signal';
+      payload: {
+        targetUserId: string;
+        signal: any;
+      };
+    }
+  | {
+      type: 'webrtc:state';
+      payload: {
+        micMuted?: boolean;
+        videoOff?: boolean;
+        speaking?: boolean;
+        characterId?: string;
+      };
+    }
   | { type: 'tile:set'; payload: { cell: TileCell } }
   | { type: 'tile:batch'; payload: { cells: TileCell[] } }
   | { type: 'map:preset'; payload: { preset: MapPresetId } }
@@ -306,6 +339,7 @@ export type ClientMessage =
   | { type: 'dice:roll'; payload: { die: number; modifier?: number } }
   | { type: 'combat:start' }
   | { type: 'combat:roll'; payload: { miniId: string } }
+  | { type: 'combat:roll_monsters' }
   | { type: 'combat:roll_all' }
   | { type: 'combat:next_turn' }
   | { type: 'combat:prev_turn' }
@@ -315,7 +349,26 @@ export type ClientMessage =
 // Server -> Client WebSocket events
 export type ServerMessage =
   | { type: 'room:state'; payload: RoomState }
+  | { type: 'user:self'; payload: { user: RoomUser } }
   | { type: 'user:list'; payload: { users: RoomUser[] } }
+  | {
+      type: 'webrtc:signal';
+      payload: {
+        senderUserId: string;
+        senderName: string;
+        signal: any;
+      };
+    }
+  | {
+      type: 'webrtc:state_updated';
+      payload: {
+        userId: string;
+        micMuted?: boolean;
+        videoOff?: boolean;
+        speaking?: boolean;
+        characterId?: string;
+      };
+    }
   | { type: 'tile:updated'; payload: { cells: TileCell[] } }
   | { type: 'mini:created'; payload: { mini: MiniatureData } }
   | { type: 'mini:updated'; payload: { mini: MiniatureData } }

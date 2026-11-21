@@ -316,42 +316,99 @@ export const YouTubeSyncPlayer: React.FC<YouTubeSyncPlayerProps> = ({
         type="button"
         onClick={onOpenMusicTab}
         title="Abrir player de musica do YouTube para a mesa"
-        className="pointer-events-auto flex items-center gap-1.5 px-3 py-1.5 bg-[#12161e]/95 hover:bg-[#1c2230] border border-stone-700/60 rounded-xl text-xs text-stone-300 hover:text-amber-300 shadow-lg transition-colors whitespace-nowrap cursor-pointer"
+        className="pointer-events-auto flex items-center gap-1.5 px-2.5 py-1 bg-[#12161e]/95 hover:bg-[#1c2230] border border-stone-700/60 rounded-xl text-xs text-stone-300 hover:text-amber-300 shadow-md transition-colors whitespace-nowrap cursor-pointer"
       >
         <Music className="w-3.5 h-3.5 text-amber-400" />
-        <span>Musica YouTube</span>
+        <span>Música</span>
       </button>
     );
   }
 
   return (
-    <div className="pointer-events-auto flex flex-col gap-1.5 p-1.5 bg-[#12161e]/95 border border-stone-700/70 rounded-xl shadow-lg max-w-[360px]">
-      <div className="flex items-center gap-2">
-        {/* Live compact YouTube IFrame (always mounted to prevent browser throttling) */}
-        <div
-          ref={hostRef}
-          className={`rounded-lg overflow-hidden bg-black border border-stone-800 shrink-0 transition-all ${
-            expanded ? 'w-56 h-32' : 'w-14 h-8'
-          }`}
-        />
+    <div className="relative pointer-events-auto flex items-center">
+      {/* Hidden / minimal YouTube IFrame container (always mounted so playback is continuous) */}
+      <div
+        ref={hostRef}
+        className={
+          expanded
+            ? 'fixed top-14 left-1/2 -translate-x-1/2 z-50 w-72 h-44 rounded-xl overflow-hidden border border-amber-500/70 shadow-2xl bg-black'
+            : 'absolute w-1 h-1 opacity-0 pointer-events-none -z-10 overflow-hidden'
+        }
+      />
 
-        {!expanded && (
-          <div className="min-w-0 flex-1">
-            <div className="flex items-center gap-1.5">
-              <Music className="w-3 h-3 text-amber-400 shrink-0" />
-              <span className="text-xs font-medium text-stone-100 truncate" title={music.title}>
-                {music.title}
-              </span>
-            </div>
-            <div className="flex items-center gap-1.5 text-[10px] text-stone-400">
-              <span>{music.isPlaying ? 'Tocando p/ mesa' : 'Pausado'}</span>
-              {music.loop && <Repeat className="w-2.5 h-2.5 text-emerald-400" />}
-              {playerError && <span className="text-rose-400">Erro no video</span>}
-            </div>
-          </div>
+      {/* Sleek Compact Music Capsule */}
+      <div className="flex items-center gap-1.5 px-2 py-1 bg-[#12161e]/95 hover:bg-[#161c28] border border-stone-700/70 rounded-xl shadow-md text-xs text-stone-200 transition-all max-w-[210px] sm:max-w-[250px]">
+        {/* Disc / Music Note Icon */}
+        <button
+          type="button"
+          onClick={() => setExpanded(!expanded)}
+          title={expanded ? 'Recolher mini vídeo' : 'Expandir vídeo do YouTube'}
+          className="text-amber-400 hover:text-amber-300 shrink-0 cursor-pointer"
+        >
+          <Music
+            className={`w-3.5 h-3.5 ${
+              music.isPlaying ? 'animate-spin [animation-duration:5s]' : ''
+            }`}
+          />
+        </button>
+
+        {/* Song Title (Truncated) */}
+        <span
+          className="truncate font-medium text-[11px] text-stone-200 cursor-pointer select-none"
+          title={`${music.title} (${music.isPlaying ? 'Tocando' : 'Pausado'})`}
+          onClick={() => role === 'gm' && onOpenMusicTab?.()}
+        >
+          {music.title || 'Música da Mesa'}
+        </span>
+
+        {/* GM Play/Pause Button */}
+        {role === 'gm' && (
+          <button
+            type="button"
+            onClick={() => onControlMusic({ action: music.isPlaying ? 'pause' : 'play' })}
+            title={music.isPlaying ? 'Pausar para todos' : 'Tocar para todos'}
+            className="p-1 text-amber-400 hover:text-amber-300 hover:bg-[#1f2737] rounded transition-colors cursor-pointer shrink-0"
+          >
+            {music.isPlaying ? <Pause className="w-3 h-3" /> : <Play className="w-3 h-3" />}
+          </button>
         )}
 
-        {/* Gesture unlock if browser blocked autoplay for a passive player */}
+        {/* Local Volume Button with Popover on Hover */}
+        <div className="relative group shrink-0">
+          <button
+            type="button"
+            onClick={() => setLocalMuted(!localMuted)}
+            className="p-1 text-stone-400 hover:text-stone-200 transition-colors cursor-pointer"
+            title={`Volume: ${localMuted ? 'Mudo' : `${localVolume}%`}`}
+          >
+            {localMuted || localVolume === 0 ? (
+              <VolumeX className="w-3.5 h-3.5 text-rose-400" />
+            ) : (
+              <Volume2 className="w-3.5 h-3.5 text-stone-300" />
+            )}
+          </button>
+
+          {/* Floating Volume Flyout */}
+          <div className="absolute top-full left-1/2 -translate-x-1/2 mt-1.5 hidden group-hover:flex items-center gap-2 p-2 bg-[#0c1017] border border-stone-700/90 rounded-xl shadow-2xl z-50 w-36">
+            <input
+              type="range"
+              min="0"
+              max="100"
+              value={localMuted ? 0 : localVolume}
+              onChange={(e) => {
+                const v = Number(e.target.value);
+                setLocalVolume(v);
+                if (v > 0 && localMuted) setLocalMuted(false);
+              }}
+              className="w-full h-1 accent-amber-500 cursor-pointer"
+            />
+            <span className="text-[10px] font-mono text-stone-400 w-6 text-right">
+              {localMuted ? '0%' : `${localVolume}%`}
+            </span>
+          </div>
+        </div>
+
+        {/* Gesture unlock prompt if autoplay was blocked */}
         {needsGesture && music.isPlaying && (
           <button
             type="button"
@@ -363,72 +420,9 @@ export const YouTubeSyncPlayer: React.FC<YouTubeSyncPlayerProps> = ({
               p.playVideo();
               setNeedsGesture(false);
             }}
-            className="px-2 py-1 text-[11px] font-semibold bg-amber-500 hover:bg-amber-400 text-stone-950 rounded-md whitespace-nowrap cursor-pointer shrink-0"
+            className="px-1.5 py-0.5 text-[9px] font-bold bg-amber-500 text-stone-950 rounded animate-pulse cursor-pointer shrink-0"
           >
             Ouvir
-          </button>
-        )}
-
-        {/* GM quick play/pause */}
-        {role === 'gm' && (
-          <button
-            type="button"
-            onClick={() => onControlMusic({ action: music.isPlaying ? 'pause' : 'play' })}
-            title={music.isPlaying ? 'Pausar para todos' : 'Tocar para todos'}
-            className="p-1.5 rounded-lg bg-[#1b2230] hover:bg-[#252f42] border border-stone-700 text-amber-300 cursor-pointer shrink-0"
-          >
-            {music.isPlaying ? <Pause className="w-3.5 h-3.5" /> : <Play className="w-3.5 h-3.5" />}
-          </button>
-        )}
-
-        {/* Expand / collapse mini video */}
-        <button
-          type="button"
-          onClick={() => setExpanded((v) => !v)}
-          title={expanded ? 'Minimizar player' : 'Expandir video YouTube'}
-          className="p-1 text-stone-400 hover:text-stone-200 cursor-pointer shrink-0"
-        >
-          {expanded ? <Minimize2 className="w-3.5 h-3.5" /> : <Maximize2 className="w-3.5 h-3.5" />}
-        </button>
-      </div>
-
-      {/* Per-user local volume & mute (never affects other players) */}
-      <div className="flex items-center gap-2 px-1">
-        <button
-          type="button"
-          onClick={() => setLocalMuted((m) => !m)}
-          title={localMuted ? 'Ativar musica local' : 'Silenciar musica local'}
-          className="text-stone-300 hover:text-amber-300 cursor-pointer shrink-0"
-        >
-          {localMuted || localVolume === 0 ? (
-            <VolumeX className="w-3.5 h-3.5 text-rose-400" />
-          ) : (
-            <Volume2 className="w-3.5 h-3.5 text-emerald-400" />
-          )}
-        </button>
-        <input
-          type="range"
-          min="0"
-          max="100"
-          value={localMuted ? 0 : localVolume}
-          onChange={(e) => {
-            const v = Number(e.target.value);
-            setLocalVolume(v);
-            if (v > 0 && localMuted) setLocalMuted(false);
-          }}
-          aria-label="Volume local da musica"
-          className="flex-1 h-1 accent-amber-500 cursor-pointer"
-        />
-        <span className="text-[10px] font-mono-tabular text-stone-400 w-7 text-right">
-          {localMuted ? '0%' : `${localVolume}%`}
-        </span>
-        {role === 'gm' && onOpenMusicTab && (
-          <button
-            type="button"
-            onClick={onOpenMusicTab}
-            className="text-[10px] text-amber-300 hover:underline whitespace-nowrap cursor-pointer"
-          >
-            Trocar
           </button>
         )}
       </div>

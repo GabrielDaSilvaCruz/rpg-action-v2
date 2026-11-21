@@ -79,6 +79,7 @@ export interface ViewportContextMenuTarget {
 interface TabletopViewportProps {
   roomState: RoomState | null;
   role: Role;
+  gmLayer?: 'all' | 'characters' | 'props';
   userName: string;
   userColor: string;
   isLobby: boolean;
@@ -251,6 +252,11 @@ function createYugiohCornerFrame(size = 1.0, color = 0xfbbf24): THREE.Group {
     group.add(vMesh);
   });
 
+  group.traverse((c) => {
+    c.raycast = () => {};
+    c.userData.isSelectionRing = true;
+  });
+
   return group;
 }
 
@@ -324,7 +330,6 @@ function detectSoftwareGl(): boolean {
     const ext = gl.getExtension('WEBGL_debug_renderer_info');
     const param = ext ? ext.UNMASKED_RENDERER_WEBGL : gl.RENDERER;
     const gpu = String(gl.getParameter(param) || '');
-    gl.getExtension('WEBGL_lose_context')?.loseContext();
     return /SwiftShader|llvmpipe|softpipe|Software|Basic Render/i.test(gpu);
   } catch {
     return false;
@@ -334,6 +339,7 @@ function detectSoftwareGl(): boolean {
 export const TabletopViewport: React.FC<TabletopViewportProps> = ({
   roomState,
   role,
+  gmLayer = 'all',
   userName,
   userColor,
   isLobby,
@@ -360,14 +366,14 @@ export const TabletopViewport: React.FC<TabletopViewportProps> = ({
   onDismissContextMenu,
 }) => {
   const mountRef = useRef<HTMLDivElement | null>(null);
-  const compassNeedleRef = useRef<HTMLDivElement | null>(null);
-  const compassTextRef = useRef<HTMLSpanElement | null>(null);
   const [contextLost, setContextLost] = useState(false);
+  const [renderKey, setRenderKey] = useState(0);
 
   // Mutable refs for 60fps loop without recreating WebGLRenderer
   const propsRef = useRef({
     roomState,
     role,
+    gmLayer,
     userName,
     userColor,
     isLobby,
@@ -395,6 +401,7 @@ export const TabletopViewport: React.FC<TabletopViewportProps> = ({
   propsRef.current = {
     roomState,
     role,
+    gmLayer,
     userName,
     userColor,
     isLobby,
@@ -429,6 +436,7 @@ export const TabletopViewport: React.FC<TabletopViewportProps> = ({
     syncDiceRolls: (rolls: DiceRollEvent[], state: RoomState) => void;
     applyCameraPreset: (preset: CameraPreset) => void;
     updateSelectionVisuals: (selectedId: string | null) => void;
+    updateLayerVisuals: (layer: 'all' | 'characters' | 'props') => void;
     focusOnMini: (miniId: string) => void;
   } | null>(null);
 
@@ -458,6 +466,7 @@ export const TabletopViewport: React.FC<TabletopViewportProps> = ({
     };
     const handleContextRestored = () => {
       setContextLost(false);
+      setRenderKey((k) => k + 1);
     };
     renderer.domElement.addEventListener('webglcontextlost', handleContextLost);
     renderer.domElement.addEventListener('webglcontextrestored', handleContextRestored);
@@ -706,6 +715,49 @@ export const TabletopViewport: React.FC<TabletopViewportProps> = ({
 
     scene.add(turnHighlightGroup);
 
+    // ========================================================================
+    // 🎙️ Aura Sonora de Fala em Tempo Real (quando jogador/mestre fala pelo personagem)
+    // ========================================================================
+    const voiceAuraGroup = new THREE.Group();
+    voiceAuraGroup.visible = false;
+
+    // Anel externo de onda sonora expansiva
+    const voiceRingGeo = new THREE.RingGeometry(0.48, 0.62, 32);
+    voiceRingGeo.rotateX(-Math.PI / 2);
+    const voiceRingMat = new THREE.MeshBasicMaterial({
+      color: 0x34d399,
+      transparent: true,
+      opacity: 0.85,
+      side: THREE.DoubleSide,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
+    });
+    const voiceRingMesh = new THREE.Mesh(voiceRingGeo, voiceRingMat);
+    voiceRingMesh.position.y = 0.05;
+    voiceAuraGroup.add(voiceRingMesh);
+
+    // Segundo anel pulsante menor (eco)
+    const voiceEcoGeo = new THREE.RingGeometry(0.32, 0.44, 32);
+    voiceEcoGeo.rotateX(-Math.PI / 2);
+    const voiceEcoMat = new THREE.MeshBasicMaterial({
+      color: 0x6ee7b7,
+      transparent: true,
+      opacity: 0.6,
+      side: THREE.DoubleSide,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
+    });
+    const voiceEcoMesh = new THREE.Mesh(voiceEcoGeo, voiceEcoMat);
+    voiceEcoMesh.position.y = 0.07;
+    voiceAuraGroup.add(voiceEcoMesh);
+
+    // Luz esmeralda suave ao redor do personagem enquanto fala
+    const voiceLight = new THREE.PointLight(0x34d399, 2.5, 4.5, 1.8);
+    voiceLight.position.set(0, 0.8, 0);
+    voiceAuraGroup.add(voiceLight);
+
+    scene.add(voiceAuraGroup);
+
     // 3D Distance Measurement Rulers (Local + Remote Participants)
     const maxAniso = renderer.capabilities.getMaxAnisotropy();
     const localRulerVisual = createRulerVisual('#22d3ee', maxAniso, true);
@@ -907,7 +959,20 @@ export const TabletopViewport: React.FC<TabletopViewportProps> = ({
       }
 
       const shadow = createContactShadow(textures.contactShadowMap, mini.footprint);
+      shadow.userData.isShadow = true;
+      shadow.raycast = () => {};
       containerGroup.add(shadow);
+
+      // Invisible cylinder click hitbox to make clicking thin 3D models 100% reliable
+      const hitboxRadius = Math.max(0.36, mini.footprint * TILE_SIZE * 0.44);
+      const hitboxHeight = Math.max(1.4, mini.footprint * 1.6);
+      const hitboxGeo = new THREE.CylinderGeometry(hitboxRadius, hitboxRadius, hitboxHeight, 16);
+      const hitboxMat = new THREE.MeshBasicMaterial({ visible: false, depthWrite: false });
+      const hitbox = new THREE.Mesh(hitboxGeo, hitboxMat);
+      hitbox.position.y = hitboxHeight / 2;
+      hitbox.userData.miniId = mini.id;
+      hitbox.userData.isHitbox = true;
+      containerGroup.add(hitbox);
 
       if (mini.showBase && !mini.isPropOnly && mini.format !== 'image') {
         const base = createMiniBase(mini.footprint, mini.color, mini.baseStyle || 'rune');
@@ -954,6 +1019,9 @@ export const TabletopViewport: React.FC<TabletopViewportProps> = ({
           if (containerGroup.userData.buildToken !== buildToken) return;
           containerGroup.remove(loadingDisc);
           containerGroup.add(tazoGroup);
+          containerGroup.traverse((child) => {
+            child.userData.miniId = mini.id;
+          });
         } catch (err) {
           console.error('Erro ao carregar Tazo de imagem:', err);
         }
@@ -990,6 +1058,9 @@ export const TabletopViewport: React.FC<TabletopViewportProps> = ({
             stoneBump: textures.chessStoneBump,
           });
           containerGroup.add(normalizedRoot);
+          containerGroup.traverse((child) => {
+            child.userData.miniId = mini.id;
+          });
         } catch (err) {
           console.error('Erro ao carregar miniatura 3D:', err);
           if (containerGroup.userData.buildToken !== buildToken) return;
@@ -1002,6 +1073,9 @@ export const TabletopViewport: React.FC<TabletopViewportProps> = ({
             textures.resinBump
           );
           containerGroup.add(fallback);
+          containerGroup.traverse((child) => {
+            child.userData.miniId = mini.id;
+          });
         }
       }
 
@@ -1031,7 +1105,8 @@ export const TabletopViewport: React.FC<TabletopViewportProps> = ({
           if (existing.signature !== visualSig) {
             existing.signature = visualSig;
             existing.group.remove(existing.selectionRing);
-            const selectionRing = createYugiohCornerFrame(mini.footprint * TILE_SIZE, 0xfbbf24);
+            const isProp = Boolean(mini.isPropOnly);
+            const selectionRing = createYugiohCornerFrame(mini.footprint * TILE_SIZE, isProp ? 0x10b981 : 0xfbbf24);
             selectionRing.visible = propsRef.current.selectedMiniId === id;
             selectionRing.userData.isSelectionRing = true;
             existing.selectionRing = selectionRing;
@@ -1043,7 +1118,8 @@ export const TabletopViewport: React.FC<TabletopViewportProps> = ({
           group.position.set(mini.x, targetY, mini.z);
           group.rotation.y = mini.rotationY;
 
-          const selectionRing = createYugiohCornerFrame(mini.footprint * TILE_SIZE, 0xfbbf24);
+          const isProp = Boolean(mini.isPropOnly);
+          const selectionRing = createYugiohCornerFrame(mini.footprint * TILE_SIZE, isProp ? 0x10b981 : 0xfbbf24);
           selectionRing.visible = propsRef.current.selectedMiniId === id;
           selectionRing.userData.isSelectionRing = true;
           group.add(selectionRing);
@@ -1289,6 +1365,53 @@ export const TabletopViewport: React.FC<TabletopViewportProps> = ({
       }
     };
 
+    const updateLayerVisuals = (layer: 'all' | 'characters' | 'props') => {
+      const rs = propsRef.current.roomState;
+      if (!rs) return;
+
+      for (const [id, entry] of miniEntries.entries()) {
+        const mini = rs.miniatures[id];
+        if (!mini) continue;
+        const isProp = Boolean(mini.isPropOnly);
+        const isDimmed =
+          (layer === 'props' && !isProp) ||
+          (layer === 'characters' && isProp);
+
+        const targetOpacity = isDimmed ? 0.32 : 1.0;
+
+        entry.group.traverse((child) => {
+          if (
+            (child as THREE.Mesh).isMesh &&
+            !child.userData?.isSelectionRing &&
+            !child.userData?.isHalo &&
+            !child.userData?.isShadow
+          ) {
+            const mesh = child as THREE.Mesh;
+            if (Array.isArray(mesh.material)) {
+              mesh.material.forEach((mat) => {
+                if (isDimmed) {
+                  mat.transparent = true;
+                  mat.opacity = 0.32;
+                } else {
+                  mat.opacity = 1.0;
+                  mat.transparent = Boolean((mat as any).map || (mat as any).alphaMap);
+                }
+              });
+            } else if (mesh.material) {
+              const mat = mesh.material;
+              if (isDimmed) {
+                mat.transparent = true;
+                mat.opacity = 0.32;
+              } else {
+                mat.opacity = 1.0;
+                mat.transparent = Boolean((mat as any).map || (mat as any).alphaMap);
+              }
+            }
+          }
+        });
+      }
+    };
+
     sceneSyncRef.current = {
       syncTiles,
       syncMinis,
@@ -1298,6 +1421,7 @@ export const TabletopViewport: React.FC<TabletopViewportProps> = ({
       syncDiceRolls,
       applyCameraPreset,
       updateSelectionVisuals,
+      updateLayerVisuals,
       focusOnMini,
     };
 
@@ -1405,8 +1529,12 @@ export const TabletopViewport: React.FC<TabletopViewportProps> = ({
     };
 
     const canUserControlMini = (mini: MiniatureData): boolean => {
-      const { role: r, userName: u } = propsRef.current;
-      if (r === 'gm') return true;
+      const { role: r, userName: u, gmLayer = 'all' } = propsRef.current;
+      if (r === 'gm') {
+        if (gmLayer === 'characters' && mini.isPropOnly) return false;
+        if (gmLayer === 'props' && !mini.isPropOnly) return false;
+        return true;
+      }
       if (mini.isPropOnly || mini.ownerName === '__GM__') return false;
       if (!mini.ownerName) return true;
       return mini.ownerName.toLowerCase() === u.toLowerCase();
@@ -1615,31 +1743,79 @@ export const TabletopViewport: React.FC<TabletopViewportProps> = ({
         return;
       }
 
-      // 1. Verifica se usuário clicou diretamente em uma miniatura (seleção/desseleção limpa)
-      const miniObjects = Array.from(miniEntries.values()).map((v) => v.group);
+      // 1. Verifica se usuário clicou diretamente em uma miniatura (filtrado por camada de seleção do Mestre)
+      const isGm = propsRef.current.role === 'gm';
+      const gmLayer = propsRef.current.gmLayer || 'all';
+
+      const candidateEntries = Array.from(miniEntries.entries()).filter(([id]) => {
+        if (!isGm || gmLayer === 'all') return true;
+        const m = propsRef.current.roomState?.miniatures[id];
+        if (!m) return true;
+        if (gmLayer === 'characters') return !m.isPropOnly;
+        if (gmLayer === 'props') return !!m.isPropOnly;
+        return true;
+      });
+
+      const miniObjects = candidateEntries.map(([, v]) => v.group);
       const miniHits = _raycaster.intersectObjects(miniObjects, true);
+
+      let clickedId: string | undefined;
+
       if (miniHits.length > 0) {
-        let hitObj: THREE.Object3D | null = miniHits[0].object;
-        while (hitObj && !hitObj.userData?.miniId) {
-          hitObj = hitObj.parent;
-        }
-        const clickedId = hitObj?.userData?.miniId as string | undefined;
-        if (clickedId) {
-          if (propsRef.current.selectedMiniId === clickedId) {
-            propsRef.current.onSelectMini(null);
-            audioSynth.playMiniDrop();
-          } else {
-            propsRef.current.onSelectMini(clickedId);
-            propsRef.current.onSelectAnnotation(null);
-            audioSynth.playMiniPickup();
-            hoverCursor.scale.set(1.2, 1, 1.2);
-            const m = propsRef.current.roomState?.miniatures[clickedId];
-            if (m) {
-              lastActiveCell = { x: Math.floor(m.x), z: Math.floor(m.z) };
-            }
+        // Encontra o primeiro hit válido que NÃO seja sombra ou frame de seleção
+        for (const hit of miniHits) {
+          if (hit.object.userData?.isShadow || hit.object.userData?.isSelectionRing) {
+            continue;
           }
-          return;
+          let hitObj: THREE.Object3D | null = hit.object;
+          while (hitObj && !hitObj.userData?.miniId) {
+            hitObj = hitObj.parent;
+          }
+          if (hitObj?.userData?.miniId) {
+            clickedId = hitObj.userData.miniId as string;
+            break;
+          }
         }
+      }
+
+      // 1b. Se não pegou na malha direta da miniatura, verifica se o clique foi na célula onde está a miniatura
+      if (!clickedId && propsRef.current.roomState) {
+        const cell = raycastGridCell();
+        if (cell) {
+          const allMinis = Object.values(propsRef.current.roomState.miniatures);
+          const matched = allMinis.find((m) => {
+            if (isGm) {
+              if (gmLayer === 'characters' && m.isPropOnly) return false;
+              if (gmLayer === 'props' && !m.isPropOnly) return false;
+            } else if (!canUserControlMini(m)) {
+              return false;
+            }
+            const half = (m.footprint || 1) / 2;
+            const diffX = Math.abs(cell.x - m.x);
+            const diffZ = Math.abs(cell.z - m.z);
+            return diffX <= half && diffZ <= half;
+          });
+          if (matched) {
+            clickedId = matched.id;
+          }
+        }
+      }
+
+      if (clickedId) {
+        if (propsRef.current.selectedMiniId === clickedId) {
+          propsRef.current.onSelectMini(null);
+          audioSynth.playMiniDrop();
+        } else {
+          propsRef.current.onSelectMini(clickedId);
+          propsRef.current.onSelectAnnotation(null);
+          audioSynth.playMiniPickup();
+          hoverCursor.scale.set(1.2, 1, 1.2);
+          const m = propsRef.current.roomState?.miniatures[clickedId];
+          if (m) {
+            lastActiveCell = { x: Math.floor(m.x), z: Math.floor(m.z) };
+          }
+        }
+        return;
       }
 
       // 1b. Se GM clica em anotação existente no modo interagir
@@ -1793,12 +1969,20 @@ export const TabletopViewport: React.FC<TabletopViewportProps> = ({
           const cellX = lastActiveCell.x;
           const cellZ = lastActiveCell.z;
 
-          // Procura miniatura ou prop 3D na casa
+          // Procura miniatura ou prop 3D na casa respeitando a camada ativa do Mestre
+          const isGm = propsRef.current.role === 'gm';
+          const gmLayer = propsRef.current.gmLayer || 'all';
+
           const foundMini = Object.values(rs.miniatures).find((m) => {
             const isEven = m.footprint % 2 === 0;
             const mx = isEven ? Math.floor(m.x) : Math.round(m.x);
             const mz = isEven ? Math.floor(m.z) : Math.round(m.z);
-            return mx === cellX && mz === cellZ;
+            if (mx !== cellX || mz !== cellZ) return false;
+            if (isGm) {
+              if (gmLayer === 'characters' && m.isPropOnly) return false;
+              if (gmLayer === 'props' && !m.isPropOnly) return false;
+            }
+            return true;
           });
 
           if (foundMini && canUserControlMini(foundMini)) {
@@ -2166,32 +2350,47 @@ export const TabletopViewport: React.FC<TabletopViewportProps> = ({
         turnHighlightGroup.visible = false;
       }
 
+      // 🎙️ Atualizar Aura Sonora de Fala em Tempo Real (quando alguém fala pelo personagem)
+      const roomUsersList = propsRef.current.roomState?.users || [];
+      const speakingUser = roomUsersList.find((u) => u.speaking && u.characterId);
+      if (speakingUser && speakingUser.characterId) {
+        const charMiniVisual = miniEntries.get(speakingUser.characterId);
+        if (charMiniVisual) {
+          voiceAuraGroup.visible = true;
+          voiceAuraGroup.position.set(
+            charMiniVisual.group.position.x,
+            charMiniVisual.group.position.y,
+            charMiniVisual.group.position.z
+          );
+
+          const miniData = propsRef.current.roomState?.miniatures[speakingUser.characterId];
+          const fp = miniData?.footprint || 1;
+
+          // Efeito de onda sonora expansiva contínua
+          const cycle = (elapsed * 3.2) % 1.0;
+          const currentScale = fp * (0.85 + cycle * 0.7);
+          voiceRingMesh.scale.set(currentScale, 1, currentScale);
+          voiceRingMat.opacity = Math.max(0, 0.85 * (1 - cycle));
+
+          const ecoCycle = (elapsed * 3.2 + 0.5) % 1.0;
+          const ecoScale = fp * (0.85 + ecoCycle * 0.7);
+          voiceEcoMesh.scale.set(ecoScale, 1, ecoScale);
+          voiceEcoMat.opacity = Math.max(0, 0.6 * (1 - ecoCycle));
+
+          voiceRingMesh.rotation.y += dt * 2.0;
+          voiceEcoMesh.rotation.y -= dt * 1.5;
+
+          const voicePulse = 1.0 + Math.sin(elapsed * 8.0) * 0.25;
+          voiceLight.intensity = 2.4 * voicePulse;
+        } else {
+          voiceAuraGroup.visible = false;
+        }
+      } else {
+        voiceAuraGroup.visible = false;
+      }
+
       // Animação de bounce suave do cursor de seleção Yu-Gi-Oh
       hoverCursor.scale.lerp(new THREE.Vector3(1, 1, 1), Math.min(1, dt * 14));
-
-      // Atualiza bússola tática e leitura de orientação da câmera (sem re-render no React)
-      const camDirFull = new THREE.Vector3();
-      camera.getWorldDirection(camDirFull);
-      const isTopDown = camDirFull.y < -0.65;
-
-      const camDir = new THREE.Vector3(camDirFull.x, 0, camDirFull.z);
-      camDir.normalize();
-      let camAngle = Math.atan2(camDir.x, -camDir.z);
-      let camDeg = (camAngle * 180) / Math.PI;
-      if (camDeg < 0) camDeg += 360;
-
-      if (compassNeedleRef.current) {
-        compassNeedleRef.current.style.transform = `rotate(${-camDeg}deg)`;
-      }
-      if (compassTextRef.current) {
-        if (isTopDown || propsRef.current.toolMode === 'sculpt') {
-          compassTextRef.current.innerText = 'Topo (Eixo Fixo)';
-        } else {
-          const sector = Math.floor(((camDeg + 45) % 360) / 90);
-          const sectorNames = ['Norte (-Z)', 'Leste (+X)', 'Sul (+Z)', 'Oeste (-X)'];
-          compassTextRef.current.innerText = sectorNames[sector];
-        }
-      }
 
       renderer.render(scene, camera);
 
@@ -2248,7 +2447,7 @@ export const TabletopViewport: React.FC<TabletopViewportProps> = ({
         container.removeChild(renderer.domElement);
       }
     };
-  }, []);
+  }, [renderKey]);
 
   // Sync React roomState changes into Three.js objects without resetting camera
   useEffect(() => {
@@ -2258,7 +2457,12 @@ export const TabletopViewport: React.FC<TabletopViewportProps> = ({
     sceneSyncRef.current.syncAnnotations(roomState, role, selectedAnnotationId);
     sceneSyncRef.current.syncRemoteRulers(roomState.rulers);
     sceneSyncRef.current.syncDiceRolls(roomState.recentRolls || [], roomState);
-  }, [roomState, role, selectedAnnotationId]);
+    sceneSyncRef.current.updateLayerVisuals(gmLayer);
+  }, [roomState, role, selectedAnnotationId, gmLayer]);
+
+  useEffect(() => {
+    sceneSyncRef.current?.updateLayerVisuals(gmLayer);
+  }, [gmLayer]);
 
   useEffect(() => {
     sceneSyncRef.current?.syncLocalRuler(localRuler, measureRule, userColor || '#22d3ee');
@@ -2306,63 +2510,32 @@ export const TabletopViewport: React.FC<TabletopViewportProps> = ({
         }`}
       />
 
-      {/* 🧭 Bússola Tática & Orientação Dinâmica de Câmera */}
-      {!isLobby && (
-        <div className="absolute top-3 left-3 pointer-events-none z-10 flex flex-col gap-1.5 select-none animate-in fade-in duration-300">
-          <div className="flex items-center gap-2.5 px-3 py-1.5 rounded-lg bg-[#0e121a]/90 border border-stone-700/60 shadow-xl backdrop-blur-md text-xs text-stone-300">
-            {/* Agulha da Bússola 3D */}
-            <div className="relative w-6 h-6 flex items-center justify-center shrink-0 bg-[#161d2a] rounded-full border border-stone-600/50 shadow-inner">
-              <div
-                ref={compassNeedleRef}
-                className="w-full h-full flex items-center justify-center"
-              >
-                <div className="w-1.5 h-3 bg-gradient-to-t from-red-600 to-red-400 rounded-t-sm shadow-[0_0_6px_rgba(239,68,68,0.7)]" />
-                <div className="w-1.5 h-3 bg-gradient-to-b from-stone-500 to-stone-300 rounded-b-sm absolute" />
-              </div>
-            </div>
-            <div className="flex flex-col">
-              <div className="flex items-center gap-1.5">
-                <span className="text-[10px] font-semibold text-amber-400 tracking-wider uppercase">Câmera:</span>
-                <span ref={compassTextRef} className="text-amber-300 font-mono text-[11px] font-medium">Norte (-Z)</span>
-              </div>
-              <span className="text-[10px] text-stone-400">
-                [Setas/WASD] movem na direção da sua tela
-              </span>
-            </div>
-          </div>
-
-          {/* Dica de Atalhos do Modo Tático quando miniatura/objeto está selecionado */}
-          {selectedMiniId && roomState?.miniatures[selectedMiniId] && (
-            <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-[#111928]/95 border border-sky-500/50 shadow-lg backdrop-blur-md text-xs text-sky-200">
-              <span className="w-2 h-2 rounded-full bg-sky-400 animate-ping shrink-0" />
-              <div className="flex items-center gap-1.5 flex-wrap">
-                <span className="font-semibold text-sky-300">
-                  {roomState.miniatures[selectedMiniId].name}
-                </span>
-                <span className="text-stone-500">|</span>
-                <span className="text-stone-300">
-                  Setas/WASD: Movem na visão da tela · Q/E/R: Giram 90° · Espaço/Enter: Fixa no chão
-                </span>
-              </div>
-            </div>
-          )}
-        </div>
-      )}
-
       {contextLost && (
         <div className="absolute inset-0 flex items-center justify-center bg-[#0d1015]/95 z-50">
           <div className="max-w-md p-6 border border-stone-700/60 bg-[#141820] rounded-xl text-center shadow-2xl">
-            <h2 className="font-display text-lg text-amber-400 mb-2">Contexto WebGL pausado</h2>
+            <h2 className="font-display text-lg text-amber-400 mb-2">Contexto WebGL em pausa</h2>
             <p className="text-sm text-stone-300 mb-4">
-              O navegador suspendeu a renderizacao 3D temporariamente. O cache e contextos foram otimizados.
+              O navegador suspendeu a aceleração 3D temporariamente. O cache e recursos foram otimizados.
             </p>
-            <button
-              type="button"
-              onClick={() => window.location.reload()}
-              className="px-4 py-2 bg-amber-500 hover:bg-amber-400 text-stone-950 font-semibold text-sm rounded-lg shadow-lg cursor-pointer transition-colors"
-            >
-              Recarregar Mesa Agora
-            </button>
+            <div className="flex items-center justify-center gap-3">
+              <button
+                type="button"
+                onClick={() => {
+                  setContextLost(false);
+                  setRenderKey((k) => k + 1);
+                }}
+                className="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-stone-950 font-semibold text-sm rounded-lg shadow-lg cursor-pointer transition-colors"
+              >
+                Restaurar 3D Agora
+              </button>
+              <button
+                type="button"
+                onClick={() => window.location.reload()}
+                className="px-3 py-2 bg-stone-700 hover:bg-stone-600 text-stone-200 text-sm rounded-lg cursor-pointer transition-colors"
+              >
+                Recarregar Página
+              </button>
+            </div>
           </div>
         </div>
       )}

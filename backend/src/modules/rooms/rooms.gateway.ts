@@ -14,6 +14,10 @@ interface RoomUser {
   name: string;
   role: 'gm' | 'player';
   color: string;
+  characterId?: string;
+  micMuted?: boolean;
+  videoOff?: boolean;
+  speaking?: boolean;
 }
 
 interface ClientSession {
@@ -145,17 +149,67 @@ export class RoomsGateway implements OnGatewayConnection, OnGatewayDisconnect {
       switch (msg.type) {
         case 'user:join': {
           session.user = {
-            id: session.user.id,
+            id: msg.payload?.id || session.user.id,
             name: (msg.payload?.name || 'Aventureiro').slice(0, 28),
             role: msg.payload?.role === 'gm' ? 'gm' : 'player',
             color: msg.payload?.color || '#d97706',
+            characterId: msg.payload?.characterId,
+            micMuted: msg.payload?.micMuted ?? true,
+            videoOff: msg.payload?.videoOff ?? true,
+            speaking: false,
           };
           room.users = this.getRoomUsers(room.roomId);
+          this.send(client, { type: 'user:self', payload: { user: session.user } });
           this.send(client, { type: 'room:state', payload: room });
           this.broadcast(room.roomId, {
             type: 'user:list',
             payload: { users: room.users },
           });
+          break;
+        }
+
+        case 'webrtc:signal': {
+          const { targetUserId, signal } = msg.payload || {};
+          if (targetUserId && signal) {
+            const clients = this.roomClients.get(room.roomId);
+            if (clients) {
+              const payload = JSON.stringify({
+                type: 'webrtc:signal',
+                payload: {
+                  senderUserId: session.user.id,
+                  senderName: session.user.name,
+                  signal,
+                },
+              });
+              for (const targetSession of clients) {
+                if (targetSession.user.id === targetUserId && targetSession.ws.readyState === WebSocket.OPEN) {
+                  targetSession.ws.send(payload);
+                  break;
+                }
+              }
+            }
+          }
+          break;
+        }
+
+        case 'webrtc:state': {
+          if (msg.payload) {
+            if (msg.payload.micMuted !== undefined) session.user.micMuted = !!msg.payload.micMuted;
+            if (msg.payload.videoOff !== undefined) session.user.videoOff = !!msg.payload.videoOff;
+            if (msg.payload.speaking !== undefined) session.user.speaking = !!msg.payload.speaking;
+            if (msg.payload.characterId !== undefined) session.user.characterId = msg.payload.characterId;
+            room.users = this.getRoomUsers(room.roomId);
+            this.broadcast(room.roomId, {
+              type: 'webrtc:state_updated',
+              payload: {
+                userId: session.user.id,
+                micMuted: session.user.micMuted,
+                videoOff: session.user.videoOff,
+                speaking: session.user.speaking,
+                characterId: session.user.characterId,
+              },
+            });
+          }
           break;
         }
 
@@ -383,7 +437,7 @@ export class RoomsGateway implements OnGatewayConnection, OnGatewayDisconnect {
             total: result + modifier,
             timestamp: Date.now(),
           };
-          room.recentRolls = [roll, ...(room.recentRolls || [])].slice(0, 12);
+          room.recentRolls = [roll, ...(room.recentRolls || [])].slice(0, 50);
           this.broadcast(room.roomId, {
             type: 'dice:rolled',
             payload: { roll },
@@ -543,6 +597,22 @@ export class RoomsGateway implements OnGatewayConnection, OnGatewayDisconnect {
           const miniId = msg.payload?.miniId;
           const entry = room.combat.entries.find((e: any) => e.miniId === miniId || e.id === miniId);
           if (entry) {
+            const isGm = session.user.role === 'gm';
+            const mini = room.miniatures?.[entry.miniId || entry.id];
+            const isOwner =
+              !entry.isMonster &&
+              ((entry.ownerName && entry.ownerName.toLowerCase() === session.user.name.toLowerCase()) ||
+               (mini?.ownerName && mini.ownerName.toLowerCase() === session.user.name.toLowerCase()) ||
+               (!mini?.ownerName && !isGm && mini?.name?.toLowerCase() === session.user.name.toLowerCase()));
+
+            if (!isGm && !isOwner) {
+              session.ws.send(JSON.stringify({
+                type: 'error',
+                payload: { message: 'Você só pode rolar a iniciativa do seu próprio personagem!' }
+              }));
+              break;
+            }
+
             const d20 = 1 + Math.floor(Math.random() * 20);
             entry.roll = d20;
             entry.initiative = d20 + (entry.bonus || 0);
@@ -558,7 +628,7 @@ export class RoomsGateway implements OnGatewayConnection, OnGatewayDisconnect {
               total: entry.initiative,
               timestamp: Date.now(),
             };
-            room.recentRolls = [roll, ...(room.recentRolls || [])].slice(0, 12);
+            room.recentRolls = [roll, ...(room.recentRolls || [])].slice(0, 50);
             this.broadcast(room.roomId, {
               type: 'dice:rolled',
               payload: { roll },
@@ -578,6 +648,31 @@ export class RoomsGateway implements OnGatewayConnection, OnGatewayDisconnect {
             });
             this.schedulePersistToPostgres(room.roomId);
           }
+          break;
+        }
+
+        case 'combat:roll_monsters': {
+          if (!room.combat || !room.combat.entries) break;
+          if (session.user.role !== 'gm') break;
+          for (const entry of room.combat.entries) {
+            if (entry.isMonster && !entry.hasRolled) {
+              const d20 = 1 + Math.floor(Math.random() * 20);
+              entry.roll = d20;
+              entry.initiative = d20 + (entry.bonus || 0);
+              entry.hasRolled = true;
+            }
+          }
+          room.combat.entries.sort((a: any, b: any) => {
+            if (a.hasRolled && !b.hasRolled) return -1;
+            if (!a.hasRolled && b.hasRolled) return 1;
+            if (b.initiative !== a.initiative) return b.initiative - a.initiative;
+            return (b.bonus || 0) - (a.bonus || 0);
+          });
+          this.broadcast(room.roomId, {
+            type: 'combat:updated',
+            payload: { combat: room.combat },
+          });
+          this.schedulePersistToPostgres(room.roomId);
           break;
         }
 
@@ -606,7 +701,7 @@ export class RoomsGateway implements OnGatewayConnection, OnGatewayDisconnect {
             total: room.combat.entries[0]?.initiative || 10,
             timestamp: Date.now(),
           };
-          room.recentRolls = [roll, ...(room.recentRolls || [])].slice(0, 12);
+          room.recentRolls = [roll, ...(room.recentRolls || [])].slice(0, 50);
           this.broadcast(room.roomId, {
             type: 'dice:rolled',
             payload: { roll },

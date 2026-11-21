@@ -35,6 +35,8 @@ import { EntryLobby } from './components/EntryLobby';
 import { TabletopHUD } from './components/TabletopHUD';
 import { BoardContextMenu, ClipboardBoardItem } from './components/BoardContextMenu';
 import { CharacterSheetModal } from './components/CharacterSheetModal';
+import { VoiceVideoDock } from './components/VoiceVideoDock';
+import { webrtc } from './engine/webrtcManager';
 import { audioSynth } from './engine/audioSynth';
 import {
   MAX_MAP_HISTORY,
@@ -91,6 +93,8 @@ export default function App() {
   const [userName, setUserName] = useState(() => savedProfile?.name || 'Mestre Eldrin');
   const [role, setRole] = useState<Role>(() => savedProfile?.role || 'gm');
   const [userColor, setUserColor] = useState(() => savedProfile?.color || '#d97706');
+  const [myUserId, setMyUserId] = useState<string>(() => 'u-' + Math.random().toString(36).substring(2, 9));
+  const [gmLayer, setGmLayer] = useState<'all' | 'characters' | 'props'>('all');
 
   const [roomState, setRoomState] = useState<RoomState>(() =>
     createFallbackRoomState(getInitialRoomFromUrl())
@@ -188,6 +192,10 @@ export default function App() {
       ws.send(JSON.stringify(msg));
     }
   }, []);
+
+  useEffect(() => {
+    webrtc.setSendWs(sendWs);
+  }, [sendWs]);
 
   const refreshSavedRooms = useCallback(async () => {
     try {
@@ -615,10 +623,12 @@ export default function App() {
 
       ws.onopen = () => {
         setConnected(true);
+        webrtc.setMyUserId(myUserId);
         ws.send(
           JSON.stringify({
             type: 'user:join',
             payload: {
+              id: myUserId,
               name: userSessionRef.current.name,
               role: userSessionRef.current.role,
               color: userSessionRef.current.color,
@@ -636,6 +646,27 @@ export default function App() {
         }
 
         switch (msg.type) {
+          case 'user:self':
+            if (msg.payload?.user?.id) {
+              setMyUserId(msg.payload.user.id);
+              webrtc.setMyUserId(msg.payload.user.id);
+            }
+            break;
+
+          case 'webrtc:signal':
+            void webrtc.handleSignal(msg.payload.senderUserId, msg.payload.signal);
+            break;
+
+          case 'webrtc:state_updated':
+            webrtc.updateRemoteUserState(msg.payload.userId, msg.payload);
+            setRoomState((prev) => ({
+              ...prev,
+              users: prev.users.map((u) =>
+                u.id === msg.payload.userId ? { ...u, ...msg.payload } : u
+              ),
+            }));
+            break;
+
           case 'room:state': {
             const hasServerData =
               msg.payload &&
@@ -685,6 +716,7 @@ export default function App() {
 
           case 'user:list':
             setRoomState((prev) => ({ ...prev, users: msg.payload.users }));
+            webrtc.syncRoomUsers(msg.payload.users);
             break;
 
           case 'tile:updated':
@@ -835,7 +867,7 @@ export default function App() {
             audioSynth.playDiceRoll();
             setRoomState((prev) => ({
               ...prev,
-              recentRolls: [msg.payload.roll, ...(prev.recentRolls || [])].slice(0, 12),
+              recentRolls: [msg.payload.roll, ...(prev.recentRolls || [])].slice(0, 50),
             }));
             break;
 
@@ -867,6 +899,7 @@ export default function App() {
       if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current);
       wsRef.current?.close();
       wsRef.current = null;
+      webrtc.destroy();
     };
   }, [inLobby, roomId, showError]);
 
@@ -1362,7 +1395,7 @@ export default function App() {
         };
         setRoomState((prev) => ({
           ...prev,
-          recentRolls: [roll, ...(prev.recentRolls || [])].slice(0, 12),
+          recentRolls: [roll, ...(prev.recentRolls || [])].slice(0, 50),
         }));
       }
     },
@@ -1473,6 +1506,10 @@ export default function App() {
     sendWs({ type: 'combat:roll_all' });
   }, [sendWs]);
 
+  const handleRollMonstersInitiative = useCallback(() => {
+    sendWs({ type: 'combat:roll_monsters' });
+  }, [sendWs]);
+
   const handleNextTurn = useCallback(() => {
     sendWs({ type: 'combat:next_turn' });
   }, [sendWs]);
@@ -1503,6 +1540,7 @@ export default function App() {
       <TabletopViewport
         roomState={roomState}
         role={role}
+        gmLayer={gmLayer}
         userName={userName}
         userColor={userColor}
         isLobby={inLobby}
@@ -1587,6 +1625,8 @@ export default function App() {
           roomState={roomState}
           connected={connected}
           role={role}
+          gmLayer={gmLayer}
+          onSetGmLayer={setGmLayer}
           userName={userName}
           userColor={userColor}
           firebaseUser={firebaseUser}
@@ -1640,11 +1680,26 @@ export default function App() {
           onControlMusic={handleControlMusic}
           onStartCombat={handleStartCombat}
           onRollInitiative={handleRollInitiative}
+          onRollMonstersInitiative={handleRollMonstersInitiative}
           onRollAllInitiative={handleRollAllInitiative}
           onNextTurn={handleNextTurn}
           onPrevTurn={handlePrevTurn}
           onSetTurn={handleSetTurn}
           onEndCombat={handleEndCombat}
+        />
+      )}
+
+      {/* 🎙️📹 Dock Flutuante de Voz e Vídeo P2P (WebRTC) */}
+      {!inLobby && (
+        <VoiceVideoDock
+          myUserId={myUserId}
+          roomState={roomState}
+          onFocusMiniature={(miniId) => {
+            const m = roomState.miniatures[miniId];
+            if (m) {
+              setSelectedMiniId(m.id);
+            }
+          }}
         />
       )}
     </main>

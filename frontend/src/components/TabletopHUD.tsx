@@ -22,7 +22,9 @@ import {
   Globe,
   Hammer,
   Image as ImageIcon,
+  Layers,
   Link2,
+  Lock,
   LogOut,
   MapPin,
   MousePointer,
@@ -103,6 +105,8 @@ interface TabletopHUDProps {
   roomState: RoomState | null;
   connected: boolean;
   role: Role;
+  gmLayer?: 'all' | 'characters' | 'props';
+  onSetGmLayer?: (layer: 'all' | 'characters' | 'props') => void;
   userName: string;
   userColor: string;
   firebaseUser: User | null;
@@ -159,6 +163,7 @@ interface TabletopHUDProps {
   }) => void;
   onStartCombat: () => void;
   onRollInitiative: (miniId: string) => void;
+  onRollMonstersInitiative?: () => void;
   onRollAllInitiative: () => void;
   onNextTurn: () => void;
   onPrevTurn: () => void;
@@ -241,6 +246,8 @@ export const TabletopHUD: React.FC<TabletopHUDProps> = ({
   roomState,
   connected,
   role,
+  gmLayer = 'all',
+  onSetGmLayer,
   userName,
   userColor,
   firebaseUser,
@@ -292,6 +299,7 @@ export const TabletopHUD: React.FC<TabletopHUDProps> = ({
   onControlMusic,
   onStartCombat,
   onRollInitiative,
+  onRollMonstersInitiative,
   onRollAllInitiative,
   onNextTurn,
   onPrevTurn,
@@ -301,11 +309,16 @@ export const TabletopHUD: React.FC<TabletopHUDProps> = ({
   const [dockCollapsed, setDockCollapsed] = useState(false);
   const [gmTab, setGmTab] = useState<'map' | 'minis' | 'scale' | 'sheets' | 'annotations' | 'music' | 'players'>('map');
   const [assetSourceView, setAssetSourceView] = useState<'catalog' | 'import'>('catalog');
-  const [catalogFilter, setCatalogFilter] = useState<'all' | CatalogCategory>('all');
+  const [catalogFilter, setCatalogFilter] = useState<'all' | 'scenery' | CatalogCategory>('all');
+  const charCount = Object.values(roomState?.miniatures || {}).filter((m) => !m.isPropOnly).length;
+  const propCount = Object.values(roomState?.miniatures || {}).filter((m) => !!m.isPropOnly).length;
   const [previewCatalogId, setPreviewCatalogId] = useState<string>('stl-red-dragon');
   const [previewFinish, setPreviewFinish] = useState<MiniFinish>('stone');
   const [showSources, setShowSources] = useState(false);
   const [copiedLink, setCopiedLink] = useState(false);
+  const [dicePaletteOpen, setDicePaletteOpen] = useState(false);
+  const [diceModifier, setDiceModifier] = useState<number>(0);
+  const [showDiceLog, setShowDiceLog] = useState(false);
 
   // Monster & Hero-for-Player sheet creator state (GM)
   const [newMonsterTplId, setNewMonsterTplId] = useState<string>(MONSTER_SHEET_TEMPLATES[0].id);
@@ -1136,6 +1149,18 @@ export const TabletopHUD: React.FC<TabletopHUDProps> = ({
       })()
     : null;
 
+  const isMyMini = (miniId: string, miniName?: string) => {
+    if (role === 'gm') return true;
+    const target = roomState?.miniatures[miniId];
+    if (target) {
+      if (target.isPropOnly || target.sheet?.isMonster) return false;
+      if (target.ownerName && target.ownerName.toLowerCase() === userName.toLowerCase()) return true;
+      if (!target.ownerName && target.name.toLowerCase() === userName.toLowerCase()) return true;
+    }
+    if (miniName && miniName.toLowerCase() === userName.toLowerCase()) return true;
+    return false;
+  };
+
   const myMini =
     playerOwnChars[0] ||
     allMinis.find(
@@ -1160,69 +1185,112 @@ export const TabletopHUD: React.FC<TabletopHUDProps> = ({
 
   return (
     <div className="fixed inset-0 z-20 pointer-events-none flex flex-col justify-between p-4">
-      {/* Top Perimeter Bar */}
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        {/* Top-Left: Room & Role Status */}
-        <div className="pointer-events-auto flex items-center gap-3 px-3.5 py-2 bg-[#12161e]/95 border border-stone-700/60 rounded-xl shadow-lg">
-          <span className="font-display text-sm font-bold text-amber-400 whitespace-nowrap">
-            RPG Ação
-          </span>
-          <span className="text-stone-600" aria-hidden="true">·</span>
-          <span className="text-xs font-mono-tabular text-stone-200 whitespace-nowrap">
-            {roomState?.roomId || 'MESA-01'}
-          </span>
-          <button
-            type="button"
-            onClick={copyInviteLink}
-            title="Copiar link de convite para jogadores"
-            className="flex items-center gap-1.5 px-2 py-1 text-xs bg-[#1b212d] hover:bg-[#242c3b] text-stone-200 border border-stone-700/70 rounded-md transition-colors whitespace-nowrap cursor-pointer"
-          >
-            {copiedLink ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
-            <span>{copiedLink ? 'Copiado' : 'Convite'}</span>
-          </button>
+      {/* Top Perimeter Bar - Responsive Single-Line Ergonomic Header */}
+      <div className="flex flex-wrap sm:flex-nowrap items-center justify-between gap-2 px-1">
+        {/* Top-Left: Room, Role, Online & Mute */}
+        <div className="pointer-events-auto flex items-center gap-1.5 sm:gap-2 px-2.5 py-1.5 bg-[#12161e]/95 border border-stone-700/60 rounded-xl shadow-lg">
+          <div className="flex items-center gap-1.5 pr-1.5 border-r border-stone-800">
+            <span className="font-display text-xs font-bold text-amber-400 whitespace-nowrap">
+              RPG
+            </span>
+            <span className="text-xs font-mono text-stone-300 font-medium whitespace-nowrap">
+              {roomState?.roomId || 'MESA-01'}
+            </span>
+            <button
+              type="button"
+              onClick={copyInviteLink}
+              title="Copiar link de convite para a mesa"
+              className="p-1 hover:bg-[#1b212d] text-stone-400 hover:text-amber-300 rounded transition-colors cursor-pointer"
+            >
+              {copiedLink ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
+            </button>
+          </div>
 
-          <span className="text-stone-600 hidden sm:inline" aria-hidden="true">·</span>
-          <span className="hidden sm:inline text-xs text-stone-300 whitespace-nowrap">
-            {userName} ({role === 'gm' ? 'Mestre' : 'Jogador'})
-          </span>
-
+          {/* Role switcher */}
           <button
             type="button"
             onClick={() => onSwitchRole(role === 'gm' ? 'player' : 'gm')}
-            title="Alternar visao Mestre / Jogador"
-            className="flex items-center gap-1 px-2 py-1 text-xs bg-[#1b212d] hover:bg-[#242c3b] text-stone-300 border border-stone-700/70 rounded-md transition-colors whitespace-nowrap cursor-pointer"
+            title="Alternar visão Mestre / Jogador"
+            className="flex items-center gap-1 px-2 py-0.5 text-xs bg-[#1b212d] hover:bg-[#242c3b] text-stone-300 border border-stone-700/70 rounded-md transition-colors whitespace-nowrap cursor-pointer"
           >
-            {role === 'gm' ? <Crown className="w-3.5 h-3.5 text-amber-400" /> : <Shield className="w-3.5 h-3.5 text-sky-400" />}
-            <span>{role === 'gm' ? 'Modo Mestre' : 'Modo Jogador'}</span>
+            {role === 'gm' ? <Crown className="w-3 h-3 text-amber-400" /> : <Shield className="w-3 h-3 text-sky-400" />}
+            <span className="hidden sm:inline">{role === 'gm' ? 'Mestre' : 'Jogador'}</span>
           </button>
 
-          <span className="text-xs font-mono-tabular text-stone-400 whitespace-nowrap">
-            {connected ? `${roomState?.users.length || 1} online` : 'Reconectando'}
+          {/* GM Layer Filter (Filtro de Camadas do Mestre) */}
+          {role === 'gm' && onSetGmLayer && (
+            <div className="flex items-center p-0.5 bg-[#0b0e14] border border-stone-800 rounded-md text-[11px] ml-0.5">
+              <span className="text-[10px] text-stone-500 font-medium px-1 hidden md:inline">Camada:</span>
+              <button
+                type="button"
+                onClick={() => onSetGmLayer('all')}
+                title="Camada Todas: Seleciona qualquer miniatura ou prop no tabuleiro"
+                className={`px-1.5 py-0.5 rounded cursor-pointer transition-colors ${
+                  gmLayer === 'all'
+                    ? 'bg-amber-600 text-stone-950 font-bold'
+                    : 'text-stone-400 hover:text-stone-200'
+                }`}
+              >
+                Todas ({charCount + propCount})
+              </button>
+              <button
+                type="button"
+                onClick={() => onSetGmLayer('characters')}
+                title="Camada Personagens: Seleciona APENAS Heróis e Monstros (ignora árvores, muros e móveis)"
+                className={`px-1.5 py-0.5 rounded cursor-pointer transition-colors ${
+                  gmLayer === 'characters'
+                    ? 'bg-sky-600 text-white font-bold'
+                    : 'text-stone-400 hover:text-stone-200'
+                }`}
+              >
+                🧙 Personagens ({charCount})
+              </button>
+              <button
+                type="button"
+                onClick={() => onSetGmLayer('props')}
+                title="Camada Cenário: Seleciona APENAS Objetos e Props de Cenário (ignora personagens)"
+                className={`px-1.5 py-0.5 rounded cursor-pointer transition-colors ${
+                  gmLayer === 'props'
+                    ? 'bg-emerald-600 text-stone-950 font-bold'
+                    : 'text-stone-400 hover:text-stone-200'
+                }`}
+              >
+                🏰 Cenário ({propCount})
+              </button>
+            </div>
+          )}
+
+          {/* Online count */}
+          <span className="flex items-center gap-1 text-[11px] font-mono text-stone-400 whitespace-nowrap">
+            <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
+            <span>{connected ? `${roomState?.users.length || 1}` : '...'}</span>
           </span>
 
+          {/* Sound FX Mute */}
           <button
             type="button"
             onClick={onToggleMute}
-            aria-label={muted ? 'Ativar som' : 'Silenciar som'}
-            className="p-1.5 text-stone-300 hover:text-amber-400 transition-colors cursor-pointer"
+            aria-label={muted ? 'Ativar som dos efeitos' : 'Silenciar som dos efeitos'}
+            className="p-1 text-stone-400 hover:text-amber-400 transition-colors cursor-pointer"
           >
-            {muted ? <VolumeX className="w-4 h-4" /> : <Volume2 className="w-4 h-4" />}
+            {muted ? <VolumeX className="w-3.5 h-3.5 text-rose-400" /> : <Volume2 className="w-3.5 h-3.5" />}
           </button>
 
+          {/* GM Ask Initiative button */}
           {role === 'gm' && !roomState?.combat?.active && (
             <button
               type="button"
               onClick={onStartCombat}
-              title="Pedir iniciativa para todos os jogadores e monstros"
-              className="flex items-center gap-1.5 px-2.5 py-1 text-xs font-semibold bg-gradient-to-r from-amber-600 to-amber-500 hover:from-amber-500 hover:to-amber-400 text-stone-950 rounded-md shadow-md border border-amber-400/50 transition-all cursor-pointer whitespace-nowrap animate-pulse"
+              title="Pedir iniciativa para todos os combatentes"
+              className="flex items-center gap-1 px-2 py-0.5 text-xs font-semibold bg-gradient-to-r from-amber-600 to-amber-500 hover:from-amber-500 text-stone-950 rounded-md shadow border border-amber-400/50 transition-all cursor-pointer whitespace-nowrap animate-pulse ml-0.5"
             >
-              <Swords className="w-3.5 h-3.5" />
-              <span>Pedir Iniciativa</span>
+              <Swords className="w-3 h-3" />
+              <span className="hidden md:inline">Iniciativa</span>
             </button>
           )}
         </div>
 
-        {/* Top-Center: Synchronized YouTube Table Music Player (GM & All Players) */}
+        {/* Top-Center: Compact Synchronized YouTube Player */}
         <YouTubeSyncPlayer
           music={roomState?.music || null}
           role={role}
@@ -1233,58 +1301,273 @@ export const TabletopHUD: React.FC<TabletopHUDProps> = ({
           }}
         />
 
-        {/* Top-Right: Camera Presets + Dice Tray */}
-        <div className="pointer-events-auto flex flex-wrap items-center gap-2">
-          <div className="flex items-center gap-1 p-1 bg-[#12161e]/95 border border-stone-700/60 rounded-xl">
+        {/* Top-Right: Camera Presets & Compact Smart Dice Roller */}
+        <div className="pointer-events-auto flex items-center gap-1.5 sm:gap-2">
+          {/* Segmented Camera Presets */}
+          <div className="flex items-center p-0.5 bg-[#12161e]/95 border border-stone-700/60 rounded-xl shadow-sm text-xs">
             <button
               type="button"
               onClick={() => onCameraPreset('iso')}
-              className="px-2.5 py-1 text-xs text-stone-300 hover:text-white hover:bg-[#1f2633] rounded-lg transition-colors whitespace-nowrap cursor-pointer"
+              title="Visão Isométrica clássica"
+              className="px-2 py-1 text-stone-300 hover:text-white hover:bg-[#1f2633] rounded-lg transition-colors cursor-pointer"
             >
-              Isometrica
+              Iso
             </button>
             <button
               type="button"
               onClick={() => onCameraPreset('top')}
-              className="px-2.5 py-1 text-xs text-stone-300 hover:text-white hover:bg-[#1f2633] rounded-lg transition-colors whitespace-nowrap cursor-pointer"
+              title="Visão Superior do Topo (Eixo Fixo)"
+              className="px-2 py-1 text-stone-300 hover:text-white hover:bg-[#1f2633] rounded-lg transition-colors cursor-pointer"
             >
               Topo
             </button>
             <button
               type="button"
               onClick={() => onCameraPreset('dramatic')}
-              className="px-2.5 py-1 text-xs text-stone-300 hover:text-white hover:bg-[#1f2633] rounded-lg transition-colors whitespace-nowrap cursor-pointer"
+              title="Visão Imersiva em 3D"
+              className="px-2 py-1 text-stone-300 hover:text-white hover:bg-[#1f2633] rounded-lg transition-colors cursor-pointer"
             >
-              Imersiva
+              3D
             </button>
           </div>
 
-          <div className="flex items-center gap-1 p-1 bg-[#12161e]/95 border border-stone-700/60 rounded-xl">
-            <Dices className="w-4 h-4 text-amber-400 ml-1.5 mr-1 shrink-0" />
-            {[4, 6, 8, 10, 12, 20, 100].map((d) => (
+          {/* Compact Smart Dice Roller */}
+          <div className="relative flex items-center">
+            <div className="flex items-center p-0.5 bg-[#12161e]/95 border border-stone-700/60 rounded-xl shadow-sm">
               <button
-                key={d}
                 type="button"
-                onClick={() => onRollDice(d)}
-                className="px-2 py-1 text-xs font-mono-tabular text-stone-200 hover:bg-amber-600 hover:text-stone-950 rounded-lg transition-colors cursor-pointer"
+                onClick={() => onRollDice(20, diceModifier)}
+                title={`Rolar d20 ${diceModifier !== 0 ? (diceModifier > 0 ? `+${diceModifier}` : `${diceModifier}`) : ''}`}
+                className="flex items-center gap-1 px-2.5 py-1 text-xs font-bold font-mono text-stone-200 hover:text-amber-300 hover:bg-[#1c2230] rounded-lg transition-colors cursor-pointer"
               >
-                d{d}
+                <Dices className="w-3.5 h-3.5 text-amber-400" />
+                <span>d20{diceModifier !== 0 ? (diceModifier > 0 ? `+${diceModifier}` : diceModifier) : ''}</span>
               </button>
-            ))}
-            {latestRoll && (
-              <span className="ml-1.5 mr-1.5 pl-2 border-l border-stone-700 text-xs font-mono-tabular text-amber-300 whitespace-nowrap">
-                {latestRoll.userName}: d{latestRoll.die}
-                {latestRoll.modifier !== 0
-                  ? latestRoll.modifier > 0
-                    ? `+${latestRoll.modifier}`
-                    : `${latestRoll.modifier}`
-                  : ''}{' '}
-                = <strong>{latestRoll.total}</strong>
-              </span>
+
+              <button
+                type="button"
+                onClick={() => setDicePaletteOpen(!dicePaletteOpen)}
+                title="Abrir painel com outros dados (d4..d100) e modificadores"
+                className={`p-1 text-stone-400 hover:text-stone-200 hover:bg-[#1c2230] rounded-lg transition-colors cursor-pointer border-l border-stone-800 ${
+                  dicePaletteOpen ? 'bg-[#1c2230] text-amber-400' : ''
+                }`}
+              >
+                <ChevronDown className="w-3 h-3" />
+              </button>
+
+              {/* Latest Roll Pill (Clickable) */}
+              {latestRoll && (
+                <button
+                  type="button"
+                  onClick={() => setShowDiceLog((prev) => !prev)}
+                  className={`ml-1 px-2 py-0.5 text-xs font-mono font-bold rounded-lg border transition-all cursor-pointer ${
+                    latestRoll.total === 20 && latestRoll.die === 20
+                      ? 'bg-emerald-950/80 border-emerald-500/80 text-emerald-300 shadow-[0_0_10px_rgba(16,185,129,0.3)]'
+                      : latestRoll.total === 1 && latestRoll.die === 20
+                      ? 'bg-rose-950/80 border-rose-500/80 text-rose-300'
+                      : 'bg-amber-950/60 border-amber-500/40 text-amber-300'
+                  }`}
+                  title={`${latestRoll.userName} rolou d${latestRoll.die}${latestRoll.modifier !== 0 ? (latestRoll.modifier > 0 ? `+${latestRoll.modifier}` : latestRoll.modifier) : ''} = ${latestRoll.total}. Clique para ver o histórico.`}
+                >
+                  <span className="text-[10px] text-stone-400 font-normal mr-1">{latestRoll.userName.slice(0, 8)}:</span>
+                  <span>{latestRoll.total}</span>
+                </button>
+              )}
+
+              {/* Botão de Histórico de Rolagens */}
+              <button
+                type="button"
+                onClick={() => setShowDiceLog((prev) => !prev)}
+                title="Histórico de rolagens de dados"
+                className={`ml-1 flex items-center gap-1 px-2 py-1 text-xs rounded-lg transition-colors cursor-pointer border ${
+                  showDiceLog
+                    ? 'bg-amber-500/30 border-amber-400 text-amber-300 font-bold'
+                    : 'bg-[#161c28] border-stone-800 text-stone-400 hover:text-stone-200 hover:bg-stone-800'
+                }`}
+              >
+                <ScrollText className="w-3.5 h-3.5 text-amber-400" />
+                <span className="hidden sm:inline">Log</span>
+                <span className="font-mono text-[10px] text-stone-400">({roomState?.recentRolls?.length || 0})</span>
+              </button>
+            </div>
+
+            {/* Floating Dice Palette Dropdown */}
+            {dicePaletteOpen && (
+              <div className="absolute top-full right-0 mt-1.5 p-2.5 bg-[#0e121a]/98 backdrop-blur-md border border-stone-700/80 rounded-2xl shadow-2xl z-50 w-64 text-stone-200 animate-fade-in">
+                <div className="flex items-center justify-between pb-1.5 mb-2 border-b border-stone-800 text-xs font-semibold text-stone-300">
+                  <span className="flex items-center gap-1.5 text-amber-400">
+                    <Dices className="w-3.5 h-3.5" />
+                    <span>Rolar Dados</span>
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setDicePaletteOpen(false)}
+                    className="text-stone-500 hover:text-stone-200 text-xs cursor-pointer"
+                  >
+                    ✕
+                  </button>
+                </div>
+
+                {/* Dice Grid */}
+                <div className="grid grid-cols-4 gap-1.5 mb-2.5">
+                  {[4, 6, 8, 10, 12, 20, 100].map((d) => (
+                    <button
+                      key={d}
+                      type="button"
+                      onClick={() => {
+                        onRollDice(d, diceModifier);
+                        setDicePaletteOpen(false);
+                      }}
+                      className="py-1.5 px-1.5 text-xs font-mono font-bold bg-[#161c28] hover:bg-amber-500 hover:text-stone-950 border border-stone-700/60 rounded-lg transition-all cursor-pointer text-center"
+                    >
+                      d{d}
+                    </button>
+                  ))}
+                  <button
+                    type="button"
+                    onClick={() => {
+                      onRollDice(20, diceModifier);
+                      setDicePaletteOpen(false);
+                    }}
+                    className="py-1.5 px-1.5 text-xs font-mono font-bold bg-amber-600/80 hover:bg-amber-500 text-stone-950 rounded-lg transition-all cursor-pointer text-center shadow-sm"
+                  >
+                    d20★
+                  </button>
+                </div>
+
+                {/* Quick Modifiers */}
+                <div className="flex items-center justify-between gap-1 text-[11px] pt-1.5 border-t border-stone-800">
+                  <span className="text-stone-400">Modif:</span>
+                  <div className="flex items-center gap-1">
+                    {[-2, -1, 0, 1, 2, 3, 5].map((m) => (
+                      <button
+                        key={m}
+                        type="button"
+                        onClick={() => setDiceModifier(m)}
+                        className={`w-6 h-6 rounded flex items-center justify-center font-mono text-[10px] cursor-pointer transition-colors ${
+                          diceModifier === m
+                            ? 'bg-amber-500 text-stone-950 font-bold'
+                            : 'bg-[#161c28] text-stone-300 hover:bg-stone-700'
+                        }`}
+                      >
+                        {m > 0 ? `+${m}` : m}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              </div>
             )}
           </div>
         </div>
       </div>
+
+      {/* Modal / Painel Flutuante do Histórico de Rolagens */}
+      {showDiceLog && (
+        <div className="fixed top-14 right-4 w-88 max-w-[calc(100vw-2rem)] max-h-[75vh] bg-[#0e121a]/98 backdrop-blur-md border border-stone-700/80 rounded-2xl shadow-2xl z-50 flex flex-col pointer-events-auto animate-fade-in text-stone-200">
+          {/* Header */}
+          <div className="flex items-center justify-between px-3.5 py-2.5 border-b border-stone-800">
+            <div className="flex items-center gap-2">
+              <ScrollText className="w-4 h-4 text-amber-400" />
+              <span className="font-display text-xs font-bold text-stone-200">
+                Histórico de Rolagens
+              </span>
+              <span className="font-mono text-[11px] text-stone-400 px-1.5 py-0.5 bg-[#161c28] rounded border border-stone-800">
+                {roomState?.recentRolls?.length || 0}
+              </span>
+            </div>
+            <button
+              type="button"
+              onClick={() => setShowDiceLog(false)}
+              className="p-1 text-stone-400 hover:text-stone-200 hover:bg-[#1a2230] rounded-lg transition-colors cursor-pointer text-xs"
+              title="Fechar histórico"
+            >
+              ✕
+            </button>
+          </div>
+
+          {/* Roll List */}
+          <div className="flex-1 overflow-y-auto p-2.5 space-y-1.5 scrollbar-thin">
+            {!roomState?.recentRolls || roomState.recentRolls.length === 0 ? (
+              <div className="py-8 text-center text-xs text-stone-500">
+                <Dices className="w-6 h-6 mx-auto mb-2 text-stone-600 opacity-60" />
+                <p>Nenhuma rolagem feita ainda nesta sessão.</p>
+                <p className="text-[11px] text-stone-600 mt-1">Use o botão de d20 no topo ou na ficha.</p>
+              </div>
+            ) : (
+              roomState.recentRolls.map((r, i) => {
+                const isCritSuccess = r.die === 20 && r.result === 20;
+                const isCritFail = r.die === 20 && r.result === 1;
+                const timeStr = r.timestamp
+                  ? new Date(r.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+                  : '';
+                return (
+                  <div
+                    key={r.id || `${r.timestamp}-${i}`}
+                    className={`flex items-center justify-between p-2 rounded-xl border transition-colors ${
+                      isCritSuccess
+                        ? 'bg-emerald-950/40 border-emerald-500/60 shadow-[0_0_10px_rgba(16,185,129,0.15)]'
+                        : isCritFail
+                        ? 'bg-rose-950/40 border-rose-500/60 shadow-[0_0_10px_rgba(244,63,94,0.15)]'
+                        : 'bg-[#141923]/90 border-stone-800 hover:border-stone-700'
+                    }`}
+                  >
+                    <div className="flex flex-col min-w-0 pr-2">
+                      <div className="flex items-center gap-1.5">
+                        <span
+                          className="w-2 h-2 rounded-full shrink-0"
+                          style={{ backgroundColor: r.color || '#f59e0b' }}
+                        />
+                        <span className="text-xs font-semibold text-stone-200 truncate">
+                          {r.userName}
+                        </span>
+                        {timeStr && (
+                          <span className="text-[10px] font-mono text-stone-500 shrink-0">
+                            {timeStr}
+                          </span>
+                        )}
+                      </div>
+                      <div className="text-[11px] text-stone-400 font-mono mt-0.5 flex items-center gap-1">
+                        <span>d{r.die}</span>
+                        {r.modifier !== 0 && (
+                          <span className={r.modifier > 0 ? 'text-emerald-400' : 'text-rose-400'}>
+                            {r.modifier > 0 ? `+${r.modifier}` : r.modifier}
+                          </span>
+                        )}
+                        <span className="text-stone-600">·</span>
+                        <span className="text-stone-400">base [{r.result}]</span>
+                        {isCritSuccess && (
+                          <span className="text-[10px] font-bold text-emerald-400 px-1 py-0.5 bg-emerald-950/80 rounded border border-emerald-500/40 ml-1">
+                            CRÍTICO! 🎯
+                          </span>
+                        )}
+                        {isCritFail && (
+                          <span className="text-[10px] font-bold text-rose-400 px-1 py-0.5 bg-rose-950/80 rounded border border-rose-500/40 ml-1">
+                            FALHA! 💀
+                          </span>
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="shrink-0 flex items-center">
+                      <span
+                        className={`text-base font-mono font-bold px-2 py-0.5 rounded-lg border ${
+                          isCritSuccess
+                            ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/50'
+                            : isCritFail
+                            ? 'bg-rose-500/20 text-rose-300 border-rose-500/50'
+                            : 'bg-stone-900 text-amber-300 border-stone-700'
+                        }`}
+                      >
+                        {r.total}
+                      </span>
+                    </div>
+                  </div>
+                );
+              })
+            )}
+          </div>
+        </div>
+      )}
 
       {/* Combat & Initiative Tracker Bar */}
       {roomState?.combat?.active && (
@@ -1315,18 +1598,22 @@ export const TabletopHUD: React.FC<TabletopHUDProps> = ({
             </div>
 
             {/* Actions for GM and Players */}
-            <div className="flex items-center gap-2">
-              {/* Player roll initiative prompt */}
-              {playerNeedsRoll && playerEntry && (
-                <button
-                  type="button"
-                  onClick={() => onRollInitiative(playerEntry.miniId)}
-                  className="flex items-center gap-1.5 px-3 py-1 text-xs font-bold bg-gradient-to-r from-emerald-600 to-teal-500 hover:from-emerald-500 hover:to-teal-400 text-white rounded-lg shadow-lg border border-emerald-400/40 animate-bounce cursor-pointer"
-                >
-                  <Dices className="w-3.5 h-3.5" />
-                  <span>Rolar Minha Iniciativa ({playerEntry.bonus >= 0 ? `+${playerEntry.bonus}` : playerEntry.bonus})</span>
-                </button>
-              )}
+            <div className="flex items-center gap-2 flex-wrap">
+              {/* Player roll initiative prompt: can roll for ALL unrolled characters they own */}
+              {role === 'player' &&
+                roomState.combat.entries
+                  ?.filter((e) => !e.hasRolled && isMyMini(e.miniId, e.name))
+                  .map((unrolledEntry) => (
+                    <button
+                      key={unrolledEntry.id || unrolledEntry.miniId}
+                      type="button"
+                      onClick={() => onRollInitiative(unrolledEntry.miniId)}
+                      className="flex items-center gap-1.5 px-3 py-1 text-xs font-bold bg-gradient-to-r from-emerald-600 to-teal-500 hover:from-emerald-500 hover:to-teal-400 text-white rounded-lg shadow-lg border border-emerald-400/40 animate-bounce cursor-pointer"
+                    >
+                      <Dices className="w-3.5 h-3.5" />
+                      <span>Rolar {unrolledEntry.name} ({unrolledEntry.bonus >= 0 ? `+${unrolledEntry.bonus}` : unrolledEntry.bonus})</span>
+                    </button>
+                  ))}
 
               {/* Player end my turn button */}
               {isMyTurn && (
@@ -1343,6 +1630,18 @@ export const TabletopHUD: React.FC<TabletopHUDProps> = ({
               {/* GM Controls */}
               {role === 'gm' && (
                 <>
+                  {onRollMonstersInitiative && (
+                    <button
+                      type="button"
+                      onClick={onRollMonstersInitiative}
+                      title="Rolar iniciativa apenas para os Monstros e NPCs (deixa os heróis rolarem pelos jogadores)"
+                      className="flex items-center gap-1 px-2.5 py-1 text-xs bg-[#1f2633] hover:bg-[#2b3547] text-rose-300 border border-rose-500/40 rounded-lg transition-colors cursor-pointer"
+                    >
+                      <Skull className="w-3.5 h-3.5 text-rose-400" />
+                      <span className="hidden sm:inline">Rolar Monstros</span>
+                    </button>
+                  )}
+
                   <button
                     type="button"
                     onClick={onRollAllInitiative}
@@ -1449,19 +1748,40 @@ export const TabletopHUD: React.FC<TabletopHUDProps> = ({
                     )}
                   </div>
 
-                  {/* Roll individual button for GM if unrolled */}
-                  {role === 'gm' && !entry.hasRolled && (
-                    <button
-                      type="button"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        onRollInitiative(entry.miniId);
-                      }}
-                      title="Rolar iniciativa deste combatente"
-                      className="p-1 hover:bg-amber-500/30 text-amber-400 rounded transition-colors"
-                    >
-                      <Dices className="w-3 h-3" />
-                    </button>
+                  {/* Roll individual button: GM can roll for anyone unrolled, Player can roll ONLY for their own unrolled character */}
+                  {!entry.hasRolled && (
+                    (() => {
+                      const canRollThis = role === 'gm' || isMyMini(entry.miniId, entry.name);
+                      if (canRollThis) {
+                        return (
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              onRollInitiative(entry.miniId);
+                            }}
+                            title={
+                              role === 'gm'
+                                ? `Rolar iniciativa de ${entry.name}`
+                                : `Rolar a iniciativa do seu personagem (${entry.bonus >= 0 ? `+${entry.bonus}` : entry.bonus})`
+                            }
+                            className="flex items-center gap-1 px-1.5 py-0.5 bg-amber-500/20 hover:bg-amber-500/40 border border-amber-400/50 text-amber-300 rounded text-[11px] font-semibold transition-all cursor-pointer animate-pulse"
+                          >
+                            <Dices className="w-3 h-3 text-amber-400" />
+                            <span>Rolar</span>
+                          </button>
+                        );
+                      } else {
+                        return (
+                          <span
+                            title="Apenas o dono deste personagem ou o Mestre pode rolar esta iniciativa"
+                            className="p-1 text-stone-600 cursor-not-allowed"
+                          >
+                            <Lock className="w-3 h-3" />
+                          </span>
+                        );
+                      }
+                    })()
                   )}
                 </div>
               );
@@ -1877,9 +2197,11 @@ export const TabletopHUD: React.FC<TabletopHUDProps> = ({
 
                     {/* View 1: Curated 3D Models with Live Turntable Preview before Spawn / Apply */}
                     {assetSourceView === 'catalog' && (() => {
-                      const filteredCatalog = CURATED_3D_CATALOG.filter(
-                        (c) => catalogFilter === 'all' || c.category === catalogFilter
-                      );
+                      const filteredCatalog = CURATED_3D_CATALOG.filter((c) => {
+                        if (catalogFilter === 'all') return true;
+                        if (catalogFilter === 'scenery') return Boolean(c.isPropOnly);
+                        return c.category === catalogFilter;
+                      });
                       const previewItem =
                         CATALOG_BY_ID[previewCatalogId] ||
                         filteredCatalog[0] ||
@@ -1891,6 +2213,7 @@ export const TabletopHUD: React.FC<TabletopHUDProps> = ({
                             <div className="flex flex-wrap items-center gap-1 p-0.5 bg-[#0b0e14] border border-stone-800 rounded-lg">
                               {[
                                 { id: 'all', label: `Todos (${CURATED_3D_CATALOG.length})` },
+                                { id: 'scenery', label: '🏰 Cenário & Props (40+)' },
                                 { id: 'character', label: 'Herois (.STL Xadrez)' },
                                 { id: 'monster', label: 'Monstros (.STL Xadrez)' },
                                 { id: 'dungeon', label: 'Masmorra (.GLB)' },
@@ -1904,7 +2227,9 @@ export const TabletopHUD: React.FC<TabletopHUDProps> = ({
                                     const nextCat = f.id as typeof catalogFilter;
                                     setCatalogFilter(nextCat);
                                     const firstInCat = CURATED_3D_CATALOG.find(
-                                      (c) => nextCat === 'all' || c.category === nextCat
+                                      (c) =>
+                                        nextCat === 'all' ||
+                                        (nextCat === 'scenery' ? Boolean(c.isPropOnly) : c.category === nextCat)
                                     );
                                     if (firstInCat) {
                                       setPreviewCatalogId(firstInCat.id);
@@ -2446,13 +2771,18 @@ export const TabletopHUD: React.FC<TabletopHUDProps> = ({
                                     : Boolean(selectedMini.isPropOnly),
                               })
                             }
-                            className={`px-2 py-1 text-xs rounded border cursor-pointer ${
+                            title={
                               selectedMini.isPropOnly
-                                ? 'bg-sky-900/60 border-sky-500 text-sky-200'
-                                : 'bg-[#181d27] border-stone-700 text-stone-300'
+                                ? 'Converter em Personagem (movido na camada de personagens)'
+                                : 'Converter em Objeto de Cenário / Prop (movido na camada de cenário)'
+                            }
+                            className={`px-2.5 py-1 text-xs rounded border font-semibold cursor-pointer transition-colors flex items-center gap-1 ${
+                              selectedMini.isPropOnly
+                                ? 'bg-emerald-950/80 border-emerald-500 text-emerald-300 hover:bg-emerald-900'
+                                : 'bg-sky-950/80 border-sky-500 text-sky-300 hover:bg-sky-900'
                             }`}
                           >
-                            {selectedMini.isPropOnly ? 'Cenario 3D' : 'Miniatura'}
+                            {selectedMini.isPropOnly ? '🏰 Cenário 3D' : '🧙 Personagem'}
                           </button>
 
                           {!selectedMini.isPropOnly && selectedMini.format !== 'image' && (

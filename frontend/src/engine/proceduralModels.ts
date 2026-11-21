@@ -58,6 +58,8 @@ export function createContactShadow(
     opacity: 0.58,
   });
   const mesh = new THREE.Mesh(geo, mat);
+  mesh.userData.isShadow = true;
+  mesh.raycast = () => {};
   mesh.position.y = 0.008;
   return mesh;
 }

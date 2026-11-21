@@ -24,7 +24,7 @@ let sharedPreviewRenderer: THREE.WebGLRenderer | null = null;
 function getSharedPreviewRenderer(): THREE.WebGLRenderer {
   if (!sharedPreviewRenderer) {
     sharedPreviewRenderer = new THREE.WebGLRenderer({
-      antialias: true,
+      antialias: false,
       alpha: false,
       powerPreference: 'low-power',
     });
@@ -214,16 +214,19 @@ export const ModelPreview3D: React.FC<ModelPreview3DProps> = ({
 
     void mountModel();
 
-    const animate = () => {
+    let lastRenderTime = 0;
+    const animate = (time: number) => {
       if (cancelled) return;
       animId = requestAnimationFrame(animate);
+      if (time - lastRenderTime < 33) return; // Cap previews at ~30 FPS to save GPU
+      lastRenderTime = time;
       if (!dragActive) {
-        userYaw += 0.011;
+        userYaw += 0.01;
       }
       turret.rotation.y = userYaw;
       renderer.render(scene, camera);
     };
-    animate();
+    animId = requestAnimationFrame(animate);
 
     return () => {
       cancelled = true;
