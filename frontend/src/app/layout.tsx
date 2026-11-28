@@ -5,6 +5,11 @@ export const metadata: Metadata = {
   title: 'RPG Ação — Tabuleiro Virtual 3D',
   description:
     'Tabuleiro virtual de RPG 3D online estilo TaleSpire com editor de mapas para o Mestre, importador de miniaturas STL, OBJ e glTF/GLB e movimentação em tempo real.',
+  icons: {
+    icon: '/logo.png',
+    shortcut: '/logo.png',
+    apple: '/logo.png',
+  },
 };
 
 export default function RootLayout({

@@ -30,6 +30,8 @@ model Room {
   tiles       Json        @default("{}") // Coordenadas, terrenos e adereços
   miniatures  Json        @default("{}") // Miniaturas 3D, tokens e fichas
   annotations Json        @default("{}") // Desenhos e marcações no mapa
+  scenes      Json?       @default("{}") // Múltiplos mapas/cenários ativos na sala
+  activeSceneId String?   @default("scene-default") // Cena ativa padrão
   rulers      Json        @default("{}") // Réguas e medições de distância
   music       Json?       // Estado da trilha sonora (YouTube sincronizado)
   recentRolls Json        @default("[]") // Histórico recente de rolagens de dados

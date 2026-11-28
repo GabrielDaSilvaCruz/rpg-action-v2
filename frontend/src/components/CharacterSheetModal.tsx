@@ -1,8 +1,10 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useRef } from 'react';
 import {
+  Bookmark,
   Check,
   Crown,
   Dices,
+  Download,
   Eye,
   EyeOff,
   Heart,
@@ -14,9 +16,11 @@ import {
   Sparkles,
   Swords,
   Trash2,
+  Upload,
   X,
 } from 'lucide-react';
 import { CharacterSheet, MiniatureData, Role, RoomUser } from '../types/vtt';
+import { exportActorAsJson, importActorFromJson, saveActorFromMini } from '../utils/actorStorage';
 import {
   ALL_SHEET_TEMPLATES,
   calcMod,
@@ -75,6 +79,35 @@ export const CharacterSheetModal: React.FC<CharacterSheetModalProps> = ({
   const [sheet, setSheet] = useState<CharacterSheet>(() => resolveMiniSheet(mini));
   const [templateId, setTemplateId] = useState('');
   const [savedNotice, setSavedNotice] = useState(false);
+  const [libraryNotice, setLibraryNotice] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+
+  const handleSaveToLibrary = () => {
+    saveActorFromMini({ ...mini, name, hp, maxHp, sheet, ownerName });
+    setLibraryNotice(true);
+    setTimeout(() => setLibraryNotice(false), 2500);
+  };
+
+  const handleExportJson = () => {
+    exportActorAsJson({ ...mini, name, hp, maxHp, sheet, ownerName });
+  };
+
+  const handleImportJson = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    try {
+      const imported = await importActorFromJson(file);
+      setName(imported.name);
+      setHp(imported.hp);
+      setMaxHp(imported.maxHp);
+      setSheet(imported.sheet);
+      setSavedNotice(true);
+      setTimeout(() => setSavedNotice(false), 2000);
+    } catch (err: any) {
+      alert(err?.message || 'Falha ao importar ficha JSON.');
+    }
+    if (fileInputRef.current) fileInputRef.current.value = '';
+  };
 
   // Sync draft when switching to a different miniature or receiving an external update
   useEffect(() => {
@@ -722,13 +755,52 @@ export const CharacterSheetModal: React.FC<CharacterSheetModalProps> = ({
 
         {/* Bottom Modal Footer */}
         <div className="flex flex-wrap items-center justify-between gap-3 px-5 py-3 bg-[#0c0f15] border-t border-stone-800">
-          <span className="text-[11px] text-stone-400">
-            {canEdit
-              ? role === 'gm'
-                ? 'Como Mestre, voce pode editar qualquer ficha de jogador ou monstro e sincronizar em tempo real.'
-                : 'Voce pode preencher e atualizar a ficha do seu personagem em tempo real.'
-              : 'Ficha protegida — apenas o dono ou o Mestre pode editar.'}
-          </span>
+          <div className="flex items-center gap-2 flex-wrap">
+            <button
+              type="button"
+              onClick={handleSaveToLibrary}
+              title="Salvar modelo desta ficha na sua biblioteca pessoal para invocar em outros mapas"
+              className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg border transition-all cursor-pointer ${
+                libraryNotice
+                  ? 'bg-emerald-950/80 border-emerald-500 text-emerald-300'
+                  : 'bg-[#181d27] hover:bg-[#222938] border-stone-700 text-stone-300 hover:text-amber-300'
+              }`}
+            >
+              <Bookmark className="w-3.5 h-3.5 text-amber-400" />
+              <span>{libraryNotice ? 'Salvo na Biblioteca! ✓' : 'Salvar na Biblioteca'}</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={handleExportJson}
+              title="Exportar arquivo .json da ficha para seu computador"
+              className="flex items-center gap-1.5 px-2.5 py-1.5 text-xs bg-[#181d27] hover:bg-[#222938] border border-stone-700 rounded-lg text-stone-300 hover:text-white cursor-pointer"
+            >
+              <Download className="w-3.5 h-3.5 text-sky-400" />
+              <span>Exportar JSON</span>
+            </button>
+
+            {canEdit && (
+              <>
+                <button
+                  type="button"
+                  onClick={() => fileInputRef.current?.click()}
+                  title="Importar ficha de arquivo .json do seu computador"
+                  className="flex items-center gap-1.5 px-2.5 py-1.5 text-xs bg-[#181d27] hover:bg-[#222938] border border-stone-700 rounded-lg text-stone-300 hover:text-white cursor-pointer"
+                >
+                  <Upload className="w-3.5 h-3.5 text-emerald-400" />
+                  <span>Importar JSON</span>
+                </button>
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept=".json,application/json"
+                  onChange={handleImportJson}
+                  className="hidden"
+                />
+              </>
+            )}
+          </div>
 
           <div className="flex items-center gap-2">
             <button

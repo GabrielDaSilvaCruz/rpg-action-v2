@@ -15,6 +15,7 @@ interface RoomUser {
   role: 'gm' | 'player';
   color: string;
   characterId?: string;
+  currentSceneId?: string;
   micMuted?: boolean;
   videoOff?: boolean;
   speaking?: boolean;
@@ -59,6 +60,8 @@ export class RoomsGateway implements OnGatewayConnection, OnGatewayDisconnect {
             tiles: room.tiles,
             miniatures: room.miniatures,
             annotations: room.annotations,
+            scenes: room.scenes,
+            activeSceneId: room.activeSceneId,
             rulers: room.rulers,
             music: room.music,
             recentRolls: room.recentRolls,
@@ -83,10 +86,13 @@ export class RoomsGateway implements OnGatewayConnection, OnGatewayDisconnect {
       if (persisted) {
         room = {
           ...persisted,
+          scenes: persisted.scenes || {},
+          activeSceneId: persisted.activeSceneId || 'scene-default',
           combat: persisted.combat || null,
           users: [],
         };
       } else {
+        const defaultSceneId = 'scene-default';
         room = {
           id: 'room-' + id,
           roomId: id,
@@ -97,6 +103,18 @@ export class RoomsGateway implements OnGatewayConnection, OnGatewayDisconnect {
           tiles: {},
           miniatures: {},
           annotations: {},
+          scenes: {
+            [defaultSceneId]: {
+              id: defaultSceneId,
+              name: 'Portão da Masmorra',
+              presetName: 'dungeon-gate',
+              cols: 20,
+              rows: 20,
+              tiles: {},
+              annotations: {},
+            },
+          },
+          activeSceneId: defaultSceneId,
           rulers: {},
           music: null,
           recentRolls: [],
@@ -109,6 +127,31 @@ export class RoomsGateway implements OnGatewayConnection, OnGatewayDisconnect {
         this.schedulePersistToPostgres(id);
       }
       this.liveRooms.set(id, room);
+    }
+
+    // Garante que haja ao menos 1 cena padrão se room.scenes for vazio
+    if (!room.scenes || Object.keys(room.scenes).length === 0) {
+      const defaultSceneId = room.activeSceneId || 'scene-default';
+      const sceneName =
+        room.presetName === 'tavern'
+          ? 'Taverna'
+          : room.presetName === 'crypt'
+          ? 'Cripta Nórdica'
+          : room.presetName === 'arena'
+          ? 'Pico dos Dragões'
+          : 'Mapa Principal';
+      room.scenes = {
+        [defaultSceneId]: {
+          id: defaultSceneId,
+          name: sceneName,
+          presetName: room.presetName,
+          cols: room.cols || 20,
+          rows: room.rows || 20,
+          tiles: room.tiles || {},
+          annotations: room.annotations || {},
+        },
+      };
+      room.activeSceneId = defaultSceneId;
     }
 
     return room;
@@ -154,6 +197,7 @@ export class RoomsGateway implements OnGatewayConnection, OnGatewayDisconnect {
             role: msg.payload?.role === 'gm' ? 'gm' : 'player',
             color: msg.payload?.color || '#d97706',
             characterId: msg.payload?.characterId,
+            currentSceneId: msg.payload?.currentSceneId || session.user.currentSceneId || room.activeSceneId || 'scene-default',
             micMuted: msg.payload?.micMuted ?? true,
             videoOff: msg.payload?.videoOff ?? true,
             speaking: false,
@@ -216,10 +260,17 @@ export class RoomsGateway implements OnGatewayConnection, OnGatewayDisconnect {
         case 'tile:set': {
           if (msg.payload?.cell) {
             const key = `${msg.payload.cell.x},${msg.payload.cell.z}`;
-            room.tiles[key] = msg.payload.cell;
+            const targetSceneId = msg.payload.sceneId || session.user.currentSceneId || room.activeSceneId || 'scene-default';
+            if (room.scenes && targetSceneId && room.scenes[targetSceneId]) {
+              if (!room.scenes[targetSceneId].tiles) room.scenes[targetSceneId].tiles = {};
+              room.scenes[targetSceneId].tiles[key] = msg.payload.cell;
+            }
+            if (!msg.payload.sceneId || targetSceneId === room.activeSceneId) {
+              room.tiles[key] = msg.payload.cell;
+            }
             this.broadcast(room.roomId, {
               type: 'tile:updated',
-              payload: { cell: msg.payload.cell, cells: [msg.payload.cell] },
+              payload: { cell: msg.payload.cell, cells: [msg.payload.cell], sceneId: targetSceneId },
             });
             this.schedulePersistToPostgres(room.roomId);
           }
@@ -229,17 +280,27 @@ export class RoomsGateway implements OnGatewayConnection, OnGatewayDisconnect {
         case 'tile:batch':
         case 'tile:batch_set': {
           if (Array.isArray(msg.payload?.cells)) {
-            for (const cell of msg.payload.cells) {
-              const key = `${cell.x},${cell.z}`;
-              room.tiles[key] = cell;
+            const targetSceneId = msg.payload.sceneId || session.user.currentSceneId || room.activeSceneId || 'scene-default';
+            if (room.scenes && targetSceneId && room.scenes[targetSceneId]) {
+              if (!room.scenes[targetSceneId].tiles) room.scenes[targetSceneId].tiles = {};
+              for (const cell of msg.payload.cells) {
+                const key = `${cell.x},${cell.z}`;
+                room.scenes[targetSceneId].tiles[key] = cell;
+              }
+            }
+            if (!msg.payload.sceneId || targetSceneId === room.activeSceneId) {
+              for (const cell of msg.payload.cells) {
+                const key = `${cell.x},${cell.z}`;
+                room.tiles[key] = cell;
+              }
             }
             this.broadcast(room.roomId, {
               type: 'tile:batch_updated',
-              payload: { cells: msg.payload.cells },
+              payload: { cells: msg.payload.cells, sceneId: targetSceneId },
             });
             this.broadcast(room.roomId, {
               type: 'tile:updated',
-              payload: { cells: msg.payload.cells },
+              payload: { cells: msg.payload.cells, sceneId: targetSceneId },
             });
             this.schedulePersistToPostgres(room.roomId);
           }
@@ -247,8 +308,14 @@ export class RoomsGateway implements OnGatewayConnection, OnGatewayDisconnect {
         }
 
         case 'tile:clear_all': {
-          room.tiles = {};
-          this.broadcast(room.roomId, { type: 'tile:cleared_all' });
+          const targetSceneId = msg.payload?.sceneId || session.user.currentSceneId || room.activeSceneId || 'scene-default';
+          if (room.scenes && targetSceneId && room.scenes[targetSceneId]) {
+            room.scenes[targetSceneId].tiles = {};
+          }
+          if (!msg.payload?.sceneId || targetSceneId === room.activeSceneId) {
+            room.tiles = {};
+          }
+          this.broadcast(room.roomId, { type: 'tile:cleared_all', payload: { sceneId: targetSceneId } });
           this.schedulePersistToPostgres(room.roomId);
           break;
         }
@@ -257,10 +324,13 @@ export class RoomsGateway implements OnGatewayConnection, OnGatewayDisconnect {
         case 'mini:add': {
           const mini = msg.payload?.mini || msg.payload?.miniature;
           if (mini && mini.id) {
+            if (!mini.sceneId) {
+              mini.sceneId = msg.payload?.sceneId || session.user.currentSceneId || room.activeSceneId || 'scene-default';
+            }
             room.miniatures[mini.id] = mini;
             this.broadcast(room.roomId, {
               type: 'mini:created',
-              payload: { mini, miniature: mini },
+              payload: { mini, miniature: mini, sceneId: mini.sceneId },
             });
             this.schedulePersistToPostgres(room.roomId);
           }
@@ -268,7 +338,7 @@ export class RoomsGateway implements OnGatewayConnection, OnGatewayDisconnect {
         }
 
         case 'mini:move': {
-          const { id, x, z, rotationY } = msg.payload || {};
+          const { id, x, z, rotationY, sceneId } = msg.payload || {};
           if (id) {
             const isGm = session.user.role === 'gm';
             const existing = room.miniatures[id];
@@ -306,6 +376,7 @@ export class RoomsGateway implements OnGatewayConnection, OnGatewayDisconnect {
                 maxHp: 35,
                 isPropOnly: false,
                 ownerName: '',
+                sceneId: sceneId || session.user.currentSceneId || room.activeSceneId || 'scene-default',
               };
             } else {
               room.miniatures[id].x = x;
@@ -313,10 +384,13 @@ export class RoomsGateway implements OnGatewayConnection, OnGatewayDisconnect {
               if (rotationY !== undefined) {
                 room.miniatures[id].rotationY = rotationY;
               }
+              if (sceneId) {
+                room.miniatures[id].sceneId = sceneId;
+              }
             }
             this.broadcast(room.roomId, {
               type: 'mini:moved',
-              payload: { id, x, z, rotationY: room.miniatures[id].rotationY },
+              payload: { id, x, z, rotationY: room.miniatures[id].rotationY, sceneId: room.miniatures[id].sceneId },
             });
             this.schedulePersistToPostgres(room.roomId);
           }
@@ -372,10 +446,18 @@ export class RoomsGateway implements OnGatewayConnection, OnGatewayDisconnect {
 
         case 'annotation:create': {
           if (msg.payload?.annotation) {
-            room.annotations[msg.payload.annotation.id] = msg.payload.annotation;
+            const ann = msg.payload.annotation;
+            const targetSceneId = msg.payload.sceneId || ann.sceneId || session.user.currentSceneId || room.activeSceneId || 'scene-default';
+            if (room.scenes && targetSceneId && room.scenes[targetSceneId]) {
+              if (!room.scenes[targetSceneId].annotations) room.scenes[targetSceneId].annotations = {};
+              room.scenes[targetSceneId].annotations[ann.id] = ann;
+            }
+            if (!msg.payload.sceneId || targetSceneId === room.activeSceneId) {
+              room.annotations[ann.id] = ann;
+            }
             this.broadcast(room.roomId, {
               type: 'annotation:created',
-              payload: { annotation: msg.payload.annotation },
+              payload: { annotation: ann, sceneId: targetSceneId },
             });
             this.schedulePersistToPostgres(room.roomId);
           }
@@ -385,11 +467,18 @@ export class RoomsGateway implements OnGatewayConnection, OnGatewayDisconnect {
         case 'annotation:update': {
           const ann = msg.payload?.annotation || (msg.payload?.id && room.annotations[msg.payload.id]);
           if (ann) {
+            const targetSceneId = msg.payload.sceneId || ann.sceneId || session.user.currentSceneId || room.activeSceneId || 'scene-default';
             const updated = { ...(room.annotations[ann.id] || ann), ...(msg.payload.patch || ann) };
-            room.annotations[ann.id] = updated;
+            if (room.scenes && targetSceneId && room.scenes[targetSceneId]) {
+              if (!room.scenes[targetSceneId].annotations) room.scenes[targetSceneId].annotations = {};
+              room.scenes[targetSceneId].annotations[ann.id] = updated;
+            }
+            if (!msg.payload.sceneId || targetSceneId === room.activeSceneId) {
+              room.annotations[ann.id] = updated;
+            }
             this.broadcast(room.roomId, {
               type: 'annotation:updated',
-              payload: { id: ann.id, patch: msg.payload.patch, annotation: updated },
+              payload: { id: ann.id, patch: msg.payload.patch, annotation: updated, sceneId: targetSceneId },
             });
             this.schedulePersistToPostgres(room.roomId);
           }
@@ -398,10 +487,14 @@ export class RoomsGateway implements OnGatewayConnection, OnGatewayDisconnect {
 
         case 'annotation:delete': {
           if (msg.payload?.id) {
+            const targetSceneId = msg.payload.sceneId || session.user.currentSceneId || room.activeSceneId || 'scene-default';
+            if (room.scenes && targetSceneId && room.scenes[targetSceneId]?.annotations) {
+              delete room.scenes[targetSceneId].annotations[msg.payload.id];
+            }
             delete room.annotations[msg.payload.id];
             this.broadcast(room.roomId, {
               type: 'annotation:deleted',
-              payload: { id: msg.payload.id },
+              payload: { id: msg.payload.id, sceneId: targetSceneId },
             });
             this.schedulePersistToPostgres(room.roomId);
           }
@@ -412,12 +505,22 @@ export class RoomsGateway implements OnGatewayConnection, OnGatewayDisconnect {
         case 'map:restore':
         case 'room:preset': {
           if (msg.payload) {
+            const targetSceneId = msg.payload.sceneId || room.activeSceneId || 'scene-default';
             if (msg.payload.preset || msg.payload.presetName) {
               room.presetName = msg.payload.preset || msg.payload.presetName;
             }
-            if (msg.payload.tiles) room.tiles = msg.payload.tiles;
+            if (room.scenes && targetSceneId && room.scenes[targetSceneId]) {
+              if (msg.payload.preset || msg.payload.presetName) {
+                room.scenes[targetSceneId].presetName = msg.payload.preset || msg.payload.presetName;
+              }
+              if (msg.payload.tiles) room.scenes[targetSceneId].tiles = msg.payload.tiles;
+              if (msg.payload.annotations) room.scenes[targetSceneId].annotations = msg.payload.annotations;
+              if (msg.payload.cols) room.scenes[targetSceneId].cols = msg.payload.cols;
+              if (msg.payload.rows) room.scenes[targetSceneId].rows = msg.payload.rows;
+            }
+            if (msg.payload.tiles && (!msg.payload.sceneId || msg.payload.sceneId === room.activeSceneId)) room.tiles = msg.payload.tiles;
             if (msg.payload.miniatures) room.miniatures = msg.payload.miniatures;
-            if (msg.payload.annotations) room.annotations = msg.payload.annotations;
+            if (msg.payload.annotations && (!msg.payload.sceneId || msg.payload.sceneId === room.activeSceneId)) room.annotations = msg.payload.annotations;
             if (msg.payload.cols) room.cols = msg.payload.cols;
             if (msg.payload.rows) room.rows = msg.payload.rows;
 
@@ -425,6 +528,8 @@ export class RoomsGateway implements OnGatewayConnection, OnGatewayDisconnect {
               type: 'map:restored',
               payload: {
                 presetName: room.presetName,
+                sceneId: targetSceneId,
+                scenes: room.scenes,
                 tiles: room.tiles,
                 miniatures: room.miniatures,
                 annotations: room.annotations,
@@ -433,6 +538,95 @@ export class RoomsGateway implements OnGatewayConnection, OnGatewayDisconnect {
               },
             });
             this.schedulePersistToPostgres(room.roomId);
+          }
+          break;
+        }
+
+        case 'scene:create':
+        case 'scene:add': {
+          const scene = msg.payload?.scene;
+          if (scene && scene.id) {
+            if (!room.scenes) room.scenes = {};
+            room.scenes[scene.id] = scene;
+            this.broadcast(room.roomId, {
+              type: 'scene:created',
+              payload: { scene, scenes: room.scenes },
+            });
+            this.schedulePersistToPostgres(room.roomId);
+          }
+          break;
+        }
+
+        case 'scene:update': {
+          const { sceneId, patch } = msg.payload || {};
+          if (sceneId && room.scenes && room.scenes[sceneId]) {
+            room.scenes[sceneId] = { ...room.scenes[sceneId], ...patch };
+            if (sceneId === room.activeSceneId) {
+              if (patch.tiles) room.tiles = patch.tiles;
+              if (patch.annotations) room.annotations = patch.annotations;
+              if (patch.presetName) room.presetName = patch.presetName;
+            }
+            this.broadcast(room.roomId, {
+              type: 'scene:updated',
+              payload: { sceneId, patch, scene: room.scenes[sceneId], scenes: room.scenes },
+            });
+            this.schedulePersistToPostgres(room.roomId);
+          }
+          break;
+        }
+
+        case 'scene:delete': {
+          const { sceneId } = msg.payload || {};
+          if (sceneId && room.scenes && room.scenes[sceneId]) {
+            delete room.scenes[sceneId];
+            if (room.activeSceneId === sceneId) {
+              room.activeSceneId = Object.keys(room.scenes)[0] || 'scene-default';
+            }
+            // Move any miniatures from deleted scene to activeSceneId
+            for (const m of Object.values(room.miniatures || {})) {
+              if (m.sceneId === sceneId) {
+                m.sceneId = room.activeSceneId;
+              }
+            }
+            // Move any users from deleted scene
+            for (const clientSession of (this.roomClients.get(room.roomId) || [])) {
+              if (clientSession.user.currentSceneId === sceneId) {
+                clientSession.user.currentSceneId = room.activeSceneId;
+              }
+            }
+            room.users = this.getRoomUsers(room.roomId);
+            this.broadcast(room.roomId, {
+              type: 'scene:deleted',
+              payload: { sceneId, scenes: room.scenes, miniatures: room.miniatures, users: room.users },
+            });
+            this.schedulePersistToPostgres(room.roomId);
+          }
+          break;
+        }
+
+        case 'scene:switch': {
+          const { sceneId, userId } = msg.payload || {};
+          if (sceneId) {
+            if (userId) {
+              const clients = this.roomClients.get(room.roomId);
+              if (clients) {
+                for (const c of clients) {
+                  if (c.user.id === userId) {
+                    c.user.currentSceneId = sceneId;
+                  }
+                }
+              }
+            } else {
+              session.user.currentSceneId = sceneId;
+              if (session.user.role === 'gm') {
+                room.activeSceneId = sceneId;
+              }
+            }
+            room.users = this.getRoomUsers(room.roomId);
+            this.broadcast(room.roomId, {
+              type: 'user:list',
+              payload: { users: room.users },
+            });
           }
           break;
         }

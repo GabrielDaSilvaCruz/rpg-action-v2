@@ -125,6 +125,7 @@ export interface MiniatureData {
   ownerUid?: string;
   isPropOnly?: boolean;
   sheet?: CharacterSheet;
+  sceneId?: string; // ID do mapa/cenário em que esta miniatura se encontra
 }
 
 export interface RoomUser {
@@ -133,6 +134,7 @@ export interface RoomUser {
   role: Role;
   color: string;
   characterId?: string;
+  currentSceneId?: string; // ID do mapa que o jogador está visualizando
   micMuted?: boolean;
   videoOff?: boolean;
   speaking?: boolean;
@@ -149,9 +151,9 @@ export interface DiceRollEvent {
   timestamp: number;
 }
 
-export type MapPresetId = 'crypt' | 'tavern' | 'arena' | 'blank' | 'dungeon-gate';
+export type MapPresetId = 'crypt' | 'tavern' | 'arena' | 'blank' | 'dungeon-gate' | (string & {});
 
-export type AnnotationKind = 'marker' | 'circle' | 'square' | 'cone' | 'line';
+export type AnnotationKind = 'marker' | 'circle' | 'square' | 'cone' | 'line' | 'portal';
 
 export interface MapAnnotation {
   id: string;
@@ -164,6 +166,48 @@ export interface MapAnnotation {
   label: string;
   gmOnly: boolean;
   createdBy: string;
+  // Área de Transferência / Portal para outro Mapa
+  targetMap?: string;     // ID do cenário salvo ou preset (ex: 'tavern', 'scen-xyz')
+  targetMapName?: string; // Nome legível do mapa de destino
+  targetX?: number;       // Coordenada X de chegada no novo mapa
+  targetZ?: number;       // Coordenada Z de chegada no novo mapa
+  autoTeleport?: boolean; // Se true, teletransporta ao pisar; se false, pede confirmação
+}
+
+export interface SavedScenario {
+  id: string;
+  name: string;
+  description?: string;
+  createdAt: number;
+  updatedAt: number;
+  cols?: number;
+  rows?: number;
+  tiles: Record<string, TileCell>;
+  miniatures: Record<string, MiniatureData>;
+  annotations: Record<string, MapAnnotation>;
+  music?: MusicState | null;
+}
+
+export interface SavedActorTemplate {
+  id: string;
+  name: string;
+  type: 'hero' | 'monster' | 'npc';
+  format: ModelFormat;
+  assetId?: string;
+  assetName?: string;
+  remoteUrl?: string;
+  footprint: FootprintSize;
+  scaleMultiplier: number;
+  fixZUp: boolean;
+  showBase: boolean;
+  baseStyle?: BaseStyle;
+  color: string;
+  finish: MiniFinish;
+  hp: number;
+  maxHp: number;
+  ownerName?: string;
+  sheet: CharacterSheet;
+  savedAt: number;
 }
 
 export type MeasureRule = 'dnd5e' | 'dnd5e_alt' | 'euclidean';
@@ -213,6 +257,17 @@ export interface CombatState {
   lastUpdated?: number;
 }
 
+export interface RoomScene {
+  id: string; // ex: 'scene-tavern', 'scene-crypt', 'scene-arena'
+  name: string; // ex: 'Taverna de Whiterun'
+  presetName?: MapPresetId;
+  cols: number;
+  rows: number;
+  tiles: Record<string, TileCell>;
+  annotations: Record<string, MapAnnotation>;
+  music?: MusicState | null;
+}
+
 export interface RoomState {
   roomId: string;
   presetName: MapPresetId;
@@ -221,6 +276,8 @@ export interface RoomState {
   tiles: Record<string, TileCell>;
   miniatures: Record<string, MiniatureData>;
   annotations: Record<string, MapAnnotation>;
+  scenes?: Record<string, RoomScene>;
+  activeSceneId?: string;
   rulers?: Record<string, RulerMeasurement>;
   music?: MusicState | null;
   combat?: CombatState | null;
@@ -286,8 +343,8 @@ export type ClientMessage =
         characterId?: string;
       };
     }
-  | { type: 'tile:set'; payload: { cell: TileCell } }
-  | { type: 'tile:batch'; payload: { cells: TileCell[] } }
+  | { type: 'tile:set'; payload: { cell: TileCell; sceneId?: string } }
+  | { type: 'tile:batch'; payload: { cells: TileCell[]; sceneId?: string } }
   | { type: 'map:preset'; payload: { preset: MapPresetId } }
   | {
       type: 'map:restore';
@@ -296,6 +353,7 @@ export type ClientMessage =
         tiles: Record<string, TileCell>;
         miniatures: Record<string, MiniatureData>;
         annotations: Record<string, MapAnnotation>;
+        sceneId?: string;
       };
     }
   | { type: 'mini:create'; payload: { mini: MiniatureData } }
@@ -311,8 +369,12 @@ export type ClientMessage =
         ownerName?: string;
       };
     }
-  | { type: 'mini:move'; payload: { id: string; x: number; z: number; rotationY?: number } }
+  | { type: 'mini:move'; payload: { id: string; x: number; z: number; rotationY?: number; sceneId?: string } }
   | { type: 'mini:delete'; payload: { id: string } }
+  | { type: 'scene:create'; payload: { scene: RoomScene } }
+  | { type: 'scene:update'; payload: { sceneId: string; patch: Partial<RoomScene> } }
+  | { type: 'scene:delete'; payload: { sceneId: string } }
+  | { type: 'scene:switch'; payload: { sceneId: string; userId?: string } }
   | { type: 'annotation:create'; payload: { annotation: MapAnnotation } }
   | { type: 'annotation:update'; payload: { id: string; patch: Partial<MapAnnotation> } }
   | { type: 'annotation:delete'; payload: { id: string } }
@@ -369,11 +431,14 @@ export type ServerMessage =
         characterId?: string;
       };
     }
-  | { type: 'tile:updated'; payload: { cells: TileCell[] } }
+  | { type: 'tile:updated'; payload: { cells: TileCell[]; cell?: TileCell; sceneId?: string } }
   | { type: 'mini:created'; payload: { mini: MiniatureData } }
   | { type: 'mini:updated'; payload: { mini: MiniatureData } }
-  | { type: 'mini:moved'; payload: { id: string; x: number; z: number; rotationY: number } }
+  | { type: 'mini:moved'; payload: { id: string; x: number; z: number; rotationY: number; sceneId?: string } }
   | { type: 'mini:deleted'; payload: { id: string } }
+  | { type: 'scene:created'; payload: { scene: RoomScene; scenes?: Record<string, RoomScene> } }
+  | { type: 'scene:updated'; payload: { sceneId: string; patch: Partial<RoomScene>; scene: RoomScene; scenes?: Record<string, RoomScene> } }
+  | { type: 'scene:deleted'; payload: { sceneId: string; scenes: Record<string, RoomScene>; miniatures?: Record<string, MiniatureData>; users?: RoomUser[] } }
   | { type: 'annotation:created'; payload: { annotation: MapAnnotation } }
   | { type: 'annotation:updated'; payload: { annotation: MapAnnotation } }
   | { type: 'annotation:deleted'; payload: { id: string } }

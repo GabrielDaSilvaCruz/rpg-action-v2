@@ -156,57 +156,7 @@ export function buildMapPreset(preset: MapPresetId): {
     place(fromCatalog('prop-pine-3', 'pm-big-pine', 1.2, 3.5, 2.2));
     place(fromCatalog('prop-pine-4', 'pm-big-pine', 13.8, 4.5, 0.7));
 
-    // Real 3D Chess-Stone Sculpted Heroes, Monsters & Dragon (.STL)
-    place(
-      fromCatalog('mini-barbarian', 'stl-hero-barbarian', 6, 12, Math.PI, {
-        name: 'Ulfric, Barbaro',
-        hp: 52,
-        maxHp: 52,
-        ownerName: '',
-      })
-    );
-    place(
-      fromCatalog('mini-knight', 'stl-hero-knight', 7, 10, Math.PI, {
-        name: 'Sir Aldric',
-        hp: 46,
-        maxHp: 46,
-        ownerName: '',
-      })
-    );
-    place(
-      fromCatalog('mini-mage', 'stl-hero-mage', 8, 12, Math.PI, {
-        name: 'Lyra Winterhold',
-        hp: 30,
-        maxHp: 30,
-        ownerName: '',
-      })
-    );
-    place(
-      fromCatalog('mini-draugr-1', 'stl-orc', 5, 5, 0, {
-        name: 'Orc Guarda',
-        hp: 32,
-        maxHp: 32,
-        ownerName: '__GM__',
-      })
-    );
-    place(
-      fromCatalog('mini-draugr-2', 'stl-lich', 10, 5, 0, {
-        name: 'Lich Necromante',
-        hp: 36,
-        maxHp: 36,
-        ownerName: '__GM__',
-      })
-    );
-    place(
-      fromCatalog('mini-dragon', 'stl-red-dragon', 7.5, 2.5, 0, {
-        name: 'Paarthurnax Wyrm',
-        footprint: 2,
-        hp: 150,
-        maxHp: 150,
-        ownerName: '__GM__',
-      })
-    );
-
+    // Cenário limpo: apenas relevo, arquitetura e props 3D (sem personagens pré-definidos)
     annotations['ann-treasure'] = {
       id: 'ann-treasure',
       kind: 'marker',
@@ -217,18 +167,6 @@ export function buildMapPreset(preset: MapPresetId): {
       color: '#f59e0b',
       label: 'Tesouro Oculto',
       gmOnly: true,
-      createdBy: 'Mestre',
-    };
-    annotations['ann-danger'] = {
-      id: 'ann-danger',
-      kind: 'circle',
-      x: 7.5,
-      z: 2.5,
-      radius: 2,
-      rotationY: 0,
-      color: '#ef4444',
-      label: 'Sopro de Fogo (Perigo)',
-      gmOnly: false,
       createdBy: 'Mestre',
     };
 
@@ -264,31 +202,7 @@ export function buildMapPreset(preset: MapPresetId): {
     place(fromCatalog('tav-cart', 'pm-cart', 12.5, 14.2, -Math.PI / 3));
     place(fromCatalog('tav-pine-1', 'pm-big-pine', 1.2, 14, 0));
 
-    place(
-      fromCatalog('mini-knight', 'stl-hero-knight', 7.5, 9.5, Math.PI, {
-        name: 'Sir Aldric',
-        hp: 46,
-        maxHp: 46,
-        ownerName: '',
-      })
-    );
-    place(
-      fromCatalog('mini-rogue', 'stl-hero-rogue', 4.5, 6.2, Math.PI / 4, {
-        name: 'Kaelen Sombra',
-        hp: 34,
-        maxHp: 34,
-        ownerName: '',
-      })
-    );
-    place(
-      fromCatalog('mini-barbarian', 'stl-hero-barbarian', 4.5, 3.5, 0, {
-        name: 'Farkas, Companheiro',
-        hp: 52,
-        maxHp: 52,
-        ownerName: '',
-      })
-    );
-
+    // Cenário limpo: apenas arquitetura da taverna e props 3D (sem personagens pré-definidos)
     return { tiles, miniatures, annotations };
   }
 
@@ -321,39 +235,6 @@ export function buildMapPreset(preset: MapPresetId): {
   place(fromCatalog('ar-crystals-1', 'pm-crystals', 2, 7.5, 0));
   place(fromCatalog('ar-crystals-2', 'pm-crystals', 13, 7.5, Math.PI));
 
-  place(
-    fromCatalog('mini-dracolich', 'stl-dracolich', 7.5, 3.8, 0, {
-      name: 'Durnehviir Dracolich',
-      footprint: 2,
-      hp: 165,
-      maxHp: 165,
-      ownerName: '__GM__',
-    })
-  );
-  place(
-    fromCatalog('mini-death-knight', 'stl-death-knight', 5, 5, 0, {
-      name: 'Cavaleiro da Morte',
-      hp: 75,
-      maxHp: 75,
-      ownerName: '__GM__',
-    })
-  );
-  place(
-    fromCatalog('mini-knight', 'stl-hero-knight', 7, 11.5, Math.PI, {
-      name: 'Dovahkiin Paladino',
-      hp: 55,
-      maxHp: 55,
-      ownerName: '',
-    })
-  );
-  place(
-    fromCatalog('mini-mage', 'stl-hero-mage', 9, 12, Math.PI, {
-      name: 'Lyra Winterhold',
-      hp: 32,
-      maxHp: 32,
-      ownerName: '',
-    })
-  );
-
+  // Cenário limpo: apenas ruínas vulcânicas e props 3D (sem personagens pré-definidos)
   return { tiles, miniatures, annotations };
 }

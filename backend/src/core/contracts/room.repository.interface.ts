@@ -8,6 +8,8 @@ export interface RoomEntity {
   tiles: Record<string, any>;
   miniatures: Record<string, any>;
   annotations: Record<string, any>;
+  scenes?: Record<string, any>;
+  activeSceneId?: string;
   rulers?: Record<string, any>;
   music?: any;
   recentRolls?: any[];

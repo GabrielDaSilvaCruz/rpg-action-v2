@@ -1,11 +1,10 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { onAuthStateChanged, User } from 'firebase/auth';
 import { auth, testConnection } from './firebase';
 import {
   listMyFirestoreRooms,
   loadRoomFromFirestore,
   saveRoomToFirestore,
-  signInWithGoogleAccount,
   signOutGoogleAccount,
 } from './services/firestoreSync';
 import {
@@ -21,7 +20,24 @@ import {
   ServerMessage,
   TileCell,
   tileKey,
+  SavedScenario,
+  SavedActorTemplate,
+  RoomScene,
 } from './types/vtt';
+import {
+  getSavedScenarios,
+  saveScenario,
+  deleteScenario,
+  exportScenarioAsJson,
+  importScenarioFromJson,
+} from './utils/scenarioStorage';
+import {
+  getSavedActors,
+  saveActorFromMini,
+  deleteSavedActor,
+  exportActorAsJson,
+  importActorFromJson,
+} from './utils/actorStorage';
 import { BOARD_COLS, BOARD_ROWS, buildMapPreset } from './utils/mapPresets';
 import {
   AnnotationBrush,
@@ -146,6 +162,112 @@ export default function App() {
   const [savedRooms, setSavedRooms] = useState<
     { roomId: string; presetName: string; gmName: string }[]
   >([]);
+  const [savedScenariosList, setSavedScenariosList] = useState<SavedScenario[]>(() =>
+    typeof window !== 'undefined' ? getSavedScenarios() : []
+  );
+  const [savedActorsList, setSavedActorsList] = useState<SavedActorTemplate[]>(() =>
+    typeof window !== 'undefined' ? getSavedActors() : []
+  );
+  const [activePortalPrompt, setActivePortalPrompt] = useState<{
+    portal: MapAnnotation;
+    miniId: string;
+    miniName: string;
+  } | null>(null);
+
+  const [viewSceneId, setViewSceneId] = useState<string>('scene-default');
+
+  const effectiveScenes = useMemo<Record<string, RoomScene>>(() => {
+    if (roomState.scenes && Object.keys(roomState.scenes).length > 0) {
+      return roomState.scenes;
+    }
+    const fallbackSceneId = roomState.activeSceneId || 'scene-default';
+    const defaultSceneName =
+      roomState.presetName === 'tavern'
+        ? 'Taverna'
+        : roomState.presetName === 'crypt'
+        ? 'Cripta Nórdica'
+        : roomState.presetName === 'arena'
+        ? 'Pico dos Dragões'
+        : 'Portão da Masmorra';
+
+    return {
+      [fallbackSceneId]: {
+        id: fallbackSceneId,
+        name: defaultSceneName,
+        presetName: roomState.presetName || 'dungeon-gate',
+        cols: roomState.cols || BOARD_COLS,
+        rows: roomState.rows || BOARD_ROWS,
+        tiles: roomState.tiles || {},
+        annotations: roomState.annotations || {},
+        music: roomState.music,
+      },
+    };
+  }, [
+    roomState.scenes,
+    roomState.activeSceneId,
+    roomState.presetName,
+    roomState.cols,
+    roomState.rows,
+    roomState.tiles,
+    roomState.annotations,
+    roomState.music,
+  ]);
+
+  // Sincronização automática de cena para jogadores conforme a posição de seu personagem
+  useEffect(() => {
+    if (role === 'player') {
+      const myMini = Object.values(roomState.miniatures || {}).find(
+        (m) =>
+          !m.isPropOnly &&
+          m.ownerName &&
+          m.ownerName.toLowerCase() === userName.toLowerCase()
+      );
+      if (myMini?.sceneId && effectiveScenes[myMini.sceneId] && myMini.sceneId !== viewSceneId) {
+        setViewSceneId(myMini.sceneId);
+      }
+    }
+  }, [role, userName, roomState.miniatures, effectiveScenes, viewSceneId]);
+
+  // Garante que viewSceneId seja válido se a cena atual foi excluída
+  useEffect(() => {
+    if (effectiveScenes && !effectiveScenes[viewSceneId]) {
+      const firstId = Object.keys(effectiveScenes)[0];
+      if (firstId) {
+        setViewSceneId(firstId);
+      }
+    }
+  }, [effectiveScenes, viewSceneId]);
+
+  const activeScene = effectiveScenes[viewSceneId] || Object.values(effectiveScenes)[0];
+
+  const sceneFilteredRoomState = useMemo<RoomState>(() => {
+    if (!activeScene) return roomState;
+
+    const firstSceneId = Object.keys(effectiveScenes)[0] || 'scene-default';
+    const filteredMiniatures: Record<string, MiniatureData> = {};
+
+    for (const [id, mini] of Object.entries(roomState.miniatures || {})) {
+      const miniScene = mini.sceneId || firstSceneId;
+      if (miniScene === activeScene.id) {
+        filteredMiniatures[id] = mini;
+      }
+    }
+
+    return {
+      ...roomState,
+      cols: activeScene.cols || roomState.cols || 20,
+      rows: activeScene.rows || roomState.rows || 20,
+      tiles: activeScene.tiles || {},
+      annotations: activeScene.annotations || {},
+      miniatures: filteredMiniatures,
+      presetName: activeScene.presetName || roomState.presetName,
+      activeSceneId: activeScene.id,
+      scenes: effectiveScenes,
+    };
+  }, [roomState, effectiveScenes, activeScene]);
+
+  const viewSceneIdRef = useRef<string>(viewSceneId);
+  viewSceneIdRef.current = viewSceneId;
 
   const wsRef = useRef<WebSocket | null>(null);
   const lastRulerBroadcastRef = useRef<number>(0);
@@ -218,16 +340,6 @@ export default function App() {
     });
     return () => unsub();
   }, [refreshSavedRooms]);
-
-  const handleGoogleSignIn = useCallback(async () => {
-    try {
-      const user = await signInWithGoogleAccount();
-      setFirebaseUser(user);
-      await refreshSavedRooms();
-    } catch (err) {
-      showError(err instanceof Error ? err.message : 'Falha ao conectar conta Google.');
-    }
-  }, [refreshSavedRooms, showError]);
 
   const handleGoogleSignOut = useCallback(async () => {
     try {
@@ -711,6 +823,7 @@ export default function App() {
               annotations: msg.payload.annotations || prev.annotations,
               cols: msg.payload.cols || prev.cols,
               rows: msg.payload.rows || prev.rows,
+              scenes: msg.payload.scenes || prev.scenes,
             }));
             break;
 
@@ -787,10 +900,34 @@ export default function App() {
                     x: msg.payload.x,
                     z: msg.payload.z,
                     rotationY: msg.payload.rotationY,
+                    sceneId: (msg.payload as any).sceneId || existing.sceneId,
                   },
                 },
               };
             });
+            break;
+
+          case 'scene:created':
+          case 'scene:updated': {
+            const sc = (msg.payload as any).scene;
+            const scs = (msg.payload as any).scenes;
+            setRoomState((prev) => ({
+              ...prev,
+              scenes: scs || {
+                ...(prev.scenes || {}),
+                ...(sc ? { [sc.id]: sc } : {}),
+              },
+            }));
+            break;
+          }
+
+          case 'scene:deleted':
+            setRoomState((prev) => ({
+              ...prev,
+              scenes: (msg.payload as any).scenes || {},
+              miniatures: (msg.payload as any).miniatures || prev.miniatures,
+              users: (msg.payload as any).users || prev.users,
+            }));
             break;
 
           case 'mini:deleted':
@@ -1029,13 +1166,27 @@ export default function App() {
         });
       }
 
-      setRoomState((prev) => ({
-        ...prev,
-        tiles: { ...prev.tiles, [key]: cell },
-      }));
-      sendWs({ type: 'tile:set', payload: { cell } });
+      setRoomState((prev) => {
+        const currSceneId = viewSceneIdRef.current;
+        const nextScenes = { ...(prev.scenes || effectiveScenes) };
+        if (nextScenes[currSceneId]) {
+          nextScenes[currSceneId] = {
+            ...nextScenes[currSceneId],
+            tiles: {
+              ...(nextScenes[currSceneId].tiles || {}),
+              [key]: cell,
+            },
+          };
+        }
+        return {
+          ...prev,
+          tiles: { ...prev.tiles, [key]: cell },
+          scenes: nextScenes,
+        };
+      });
+      sendWs({ type: 'tile:set', payload: { cell, sceneId: viewSceneIdRef.current } });
     },
-    [recordHistory, sendWs]
+    [effectiveScenes, recordHistory, sendWs]
   );
 
   const handleMoveMini = useCallback(
@@ -1052,11 +1203,13 @@ export default function App() {
         }
       }
 
+      const miniSceneId = existing.sceneId || viewSceneIdRef.current;
       const nextMini: MiniatureData = {
         ...existing,
         x,
         z,
         rotationY: typeof rotationY === 'number' ? rotationY : existing.rotationY,
+        sceneId: miniSceneId,
       };
 
       if (
@@ -1085,15 +1238,35 @@ export default function App() {
           },
         };
       });
-      sendWs({ type: 'mini:move', payload: { id, x, z, rotationY } });
+      sendWs({ type: 'mini:move', payload: { id, x, z, rotationY, sceneId: miniSceneId } });
+
+      // Verificação de Portal / Área de Transferência ao pisar na casa
+      const targetCellX = Math.round(x);
+      const targetCellZ = Math.round(z);
+      const targetSceneAnns =
+        (roomStateRef.current.scenes?.[miniSceneId]?.annotations) ||
+        roomStateRef.current.annotations ||
+        {};
+      const portal = Object.values(targetSceneAnns).find(
+        (a) =>
+          a.kind === 'portal' &&
+          a.targetMap &&
+          Math.round(a.x) === targetCellX &&
+          Math.round(a.z) === targetCellZ
+      );
+      if (portal && portal.targetMap) {
+        handleTriggerPortal(portal, id);
+      }
     },
     [role, userName, recordHistory, sendWs]
   );
 
   const handleCreateMini = useCallback(
     (mini: MiniatureData) => {
-      const enrichedMini: MiniatureData =
-        !mini.ownerUid && firebaseUser?.uid ? { ...mini, ownerUid: firebaseUser.uid } : mini;
+      const enrichedMini: MiniatureData = {
+        ...(!mini.ownerUid && firebaseUser?.uid ? { ...mini, ownerUid: firebaseUser.uid } : mini),
+        sceneId: mini.sceneId || viewSceneIdRef.current,
+      };
       if (role === 'gm') {
         recordHistory({
           kind: 'mini-create',
@@ -1268,6 +1441,11 @@ export default function App() {
         label: annotationBrush.label.trim(),
         gmOnly: annotationBrush.gmOnly,
         createdBy: userName,
+        targetMap: annotationBrush.targetMap,
+        targetMapName: annotationBrush.targetMapName,
+        targetX: annotationBrush.targetX,
+        targetZ: annotationBrush.targetZ,
+        autoTeleport: annotationBrush.autoTeleport,
       };
       recordHistory({
         kind: 'annotation-create',
@@ -1374,6 +1552,525 @@ export default function App() {
       });
     },
     [recordHistory, sendWs]
+  );
+
+  const handleResizeBoard = useCallback(
+    (cols: number, rows: number) => {
+      if (role !== 'gm') return;
+      if (!Number.isInteger(cols) || !Number.isInteger(rows) || cols < 4 || rows < 4 || cols > 64 || rows > 64) {
+        showError('Escolha de 4 a 64 colunas e linhas para o tabuleiro.');
+        return;
+      }
+
+      const current = sceneFilteredRoomState;
+      if (cols === current.cols && rows === current.rows) return;
+
+      const nextTiles = Object.fromEntries(
+        Object.entries(current.tiles || {}).filter(
+          ([, tile]) => tile.x >= 0 && tile.z >= 0 && tile.x < cols && tile.z < rows
+        )
+      );
+      const nextAnnotations = Object.fromEntries(
+        Object.entries(current.annotations || {}).filter(
+          ([, annotation]) =>
+            annotation.x >= 0 &&
+            annotation.z >= 0 &&
+            annotation.x < cols &&
+            annotation.z < rows
+        )
+      );
+      const outOfBoundsMiniIds = new Set(
+        Object.values(current.miniatures || {})
+          .filter((mini) => mini.x < 0 || mini.z < 0 || mini.x >= cols || mini.z >= rows)
+          .map((mini) => mini.id)
+      );
+      const nextMiniatures = Object.fromEntries(
+        Object.entries(roomStateRef.current.miniatures || {}).filter(
+          ([id]) => !outOfBoundsMiniIds.has(id)
+        )
+      );
+      const removedTiles = Object.keys(current.tiles || {}).length - Object.keys(nextTiles).length;
+      const removedAnnotations =
+        Object.keys(current.annotations || {}).length - Object.keys(nextAnnotations).length;
+
+      if (
+        (removedTiles > 0 || outOfBoundsMiniIds.size > 0 || removedAnnotations > 0) &&
+        !window.confirm(
+          `Reduzir o tabuleiro removerá ${removedTiles} terrenos, ${outOfBoundsMiniIds.size} miniaturas e ${removedAnnotations} marcadores que ficarem fora dos limites. Continuar?`
+        )
+      ) {
+        return;
+      }
+
+      const sceneId = viewSceneIdRef.current;
+      setRoomState((prev) => {
+        const scenes =
+          prev.scenes?.[sceneId]
+            ? {
+                ...prev.scenes,
+                [sceneId]: {
+                  ...prev.scenes[sceneId],
+                  cols,
+                  rows,
+                  tiles: nextTiles,
+                  annotations: nextAnnotations,
+                },
+              }
+            : prev.scenes;
+        return {
+          ...prev,
+          cols,
+          rows,
+          tiles: nextTiles,
+          miniatures: nextMiniatures,
+          annotations: nextAnnotations,
+          scenes,
+        };
+      });
+      sendWs({
+        type: 'map:restore',
+        payload: {
+          sceneId,
+          cols,
+          rows,
+          tiles: nextTiles,
+          miniatures: nextMiniatures,
+          annotations: nextAnnotations,
+        },
+      });
+    },
+    [role, sceneFilteredRoomState, showError, sendWs]
+  );
+
+  const handleLoadScenarioOrPreset = useCallback(
+    (
+      targetMapId: string,
+      keepPlayerHeroes = true,
+      arrival?: { x: number; z: number; miniId?: string }
+    ) => {
+      const curr = roomStateRef.current;
+      const before = cloneSnapshot(
+        curr.presetName,
+        curr.tiles,
+        curr.miniatures,
+        curr.annotations || {}
+      );
+
+      const savedList = getSavedScenarios();
+      const custom = savedList.find((s) => s.id === targetMapId || s.name === targetMapId);
+
+      let targetTiles: Record<string, TileCell>;
+      let targetMinis: Record<string, MiniatureData>;
+      let targetAnns: Record<string, MapAnnotation>;
+      let sceneTitle: string;
+
+      if (custom) {
+        targetTiles = JSON.parse(JSON.stringify(custom.tiles || {}));
+        targetMinis = JSON.parse(JSON.stringify(custom.miniatures || {}));
+        targetAnns = JSON.parse(JSON.stringify(custom.annotations || {}));
+        sceneTitle = custom.name;
+      } else {
+        const preset = buildMapPreset((targetMapId || 'tavern') as MapPresetId);
+        targetTiles = preset.tiles;
+        targetMinis = preset.miniatures;
+        targetAnns = preset.annotations;
+        sceneTitle = targetMapId;
+      }
+
+      // Preserva e migra heróis dos jogadores para o novo cenário
+      if (keepPlayerHeroes) {
+        const playerHeroes = Object.values(curr.miniatures || {}).filter(
+          (m) => !m.isPropOnly && !m.sheet?.isMonster && m.ownerName !== '__GM__'
+        );
+        for (const hero of playerHeroes) {
+          if (arrival && arrival.miniId === hero.id) {
+            targetMinis[hero.id] = {
+              ...hero,
+              x: arrival.x,
+              z: arrival.z,
+            };
+          } else if (arrival && !targetMinis[hero.id]) {
+            targetMinis[hero.id] = {
+              ...hero,
+              x: arrival.x + (Math.random() - 0.5) * 1.5,
+              z: arrival.z + (Math.random() - 0.5) * 1.5,
+            };
+          } else if (!targetMinis[hero.id]) {
+            targetMinis[hero.id] = hero;
+          }
+        }
+      }
+
+      audioSynth.playPortalTeleport();
+
+      const after = cloneSnapshot(sceneTitle, targetTiles, targetMinis, targetAnns);
+      if (userSessionRef.current.role === 'gm') {
+        recordHistory({
+          kind: 'preset',
+          label: `Carregar cenário (${sceneTitle})`,
+          before,
+          after,
+        });
+      }
+
+      setRoomState((prev) => ({
+        ...prev,
+        presetName: sceneTitle,
+        tiles: targetTiles,
+        miniatures: targetMinis,
+        annotations: targetAnns,
+      }));
+
+      setSelectedMiniId(arrival?.miniId || null);
+      setSelectedAnnotationId(null);
+
+      sendWs({
+        type: 'map:restore',
+        payload: {
+          presetName: sceneTitle,
+          tiles: targetTiles,
+          miniatures: targetMinis,
+          annotations: targetAnns,
+        },
+      });
+
+      if (custom?.music && custom.music.videoId) {
+        sendWs({
+          type: 'music:control',
+          payload: {
+            action: 'set_and_play',
+            videoId: custom.music.videoId,
+            title: custom.music.title,
+          },
+        });
+      }
+    },
+    [recordHistory, sendWs]
+  );
+
+  const handleSelectScene = useCallback(
+    (sceneId: string) => {
+      setViewSceneId(sceneId);
+      sendWs({ type: 'scene:switch', payload: { sceneId } });
+    },
+    [sendWs]
+  );
+
+  const handleCreateScene = useCallback(
+    (scene: RoomScene) => {
+      setRoomState((prev) => ({
+        ...prev,
+        scenes: {
+          ...(prev.scenes || effectiveScenes),
+          [scene.id]: scene,
+        },
+      }));
+      setViewSceneId(scene.id);
+      sendWs({ type: 'scene:create', payload: { scene } });
+    },
+    [effectiveScenes, sendWs]
+  );
+
+  const handleDeleteScene = useCallback(
+    (sceneId: string) => {
+      const scenes = roomStateRef.current.scenes || effectiveScenes;
+      if (Object.keys(scenes).length <= 1) {
+        alert('A mesa precisa ter ao menos um mapa ativo.');
+        return;
+      }
+      const nextScenes = { ...scenes };
+      delete nextScenes[sceneId];
+      const remainingId = Object.keys(nextScenes)[0];
+      if (viewSceneIdRef.current === sceneId) {
+        setViewSceneId(remainingId);
+      }
+      setRoomState((prev) => ({
+        ...prev,
+        scenes: nextScenes,
+      }));
+      sendWs({ type: 'scene:delete', payload: { sceneId } });
+    },
+    [effectiveScenes, sendWs]
+  );
+
+  const handleMoveMiniToScene = useCallback(
+    (miniId: string, sceneId: string, targetX = 8, targetZ = 8) => {
+      const existing = roomStateRef.current.miniatures[miniId];
+      if (!existing) return;
+      const updated: MiniatureData = {
+        ...existing,
+        sceneId,
+        x: targetX,
+        z: targetZ,
+      };
+      setRoomState((prev) => ({
+        ...prev,
+        miniatures: {
+          ...prev.miniatures,
+          [miniId]: updated,
+        },
+      }));
+      sendWs({
+        type: 'mini:move',
+        payload: {
+          id: miniId,
+          x: targetX,
+          z: targetZ,
+          rotationY: existing.rotationY,
+          sceneId,
+        },
+      });
+      if (role === 'player' && existing.ownerName && existing.ownerName.toLowerCase() === userName.toLowerCase()) {
+        setViewSceneId(sceneId);
+      }
+    },
+    [role, userName, sendWs]
+  );
+
+  const handleGatherAllToScene = useCallback(
+    (sceneId: string) => {
+      if (role !== 'gm') return;
+      const curr = roomStateRef.current;
+      const nextMinis = { ...curr.miniatures };
+      let offset = 0;
+      for (const [id, mini] of Object.entries(nextMinis)) {
+        if (!mini.isPropOnly) {
+          const nx = 7 + (offset % 5) * 1.5;
+          const nz = 7 + Math.floor(offset / 5) * 1.5;
+          offset++;
+          nextMinis[id] = {
+            ...mini,
+            sceneId,
+            x: nx,
+            z: nz,
+          };
+          sendWs({
+            type: 'mini:move',
+            payload: {
+              id,
+              x: nx,
+              z: nz,
+              rotationY: mini.rotationY,
+              sceneId,
+            },
+          });
+        }
+      }
+      setRoomState((prev) => ({
+        ...prev,
+        miniatures: nextMinis,
+      }));
+    },
+    [role, sendWs]
+  );
+
+  const handleExecutePortalTeleport = useCallback(
+    (portal: MapAnnotation, miniId: string) => {
+      setActivePortalPrompt(null);
+      if (!portal.targetMap) return;
+      const targetX = typeof portal.targetX === 'number' ? portal.targetX : 8;
+      const targetZ = typeof portal.targetZ === 'number' ? portal.targetZ : 8;
+
+      const scenes = roomStateRef.current.scenes || effectiveScenes;
+      if (scenes[portal.targetMap]) {
+        handleMoveMiniToScene(miniId, portal.targetMap, targetX, targetZ);
+        return;
+      }
+
+      // Se for cenário salvo ou preset não instanciado
+      const savedList = getSavedScenarios();
+      const custom = savedList.find((s) => s.id === portal.targetMap || s.name === portal.targetMap);
+
+      let targetTiles: Record<string, TileCell>;
+      let targetAnns: Record<string, MapAnnotation>;
+      let sceneTitle: string;
+      let presetName: MapPresetId;
+
+      if (custom) {
+        targetTiles = JSON.parse(JSON.stringify(custom.tiles || {}));
+        targetAnns = JSON.parse(JSON.stringify(custom.annotations || {}));
+        sceneTitle = custom.name;
+        presetName = 'tavern';
+      } else {
+        const preset = buildMapPreset((portal.targetMap || 'tavern') as MapPresetId);
+        targetTiles = preset.tiles;
+        targetAnns = preset.annotations;
+        sceneTitle = portal.targetMapName || portal.targetMap;
+        presetName = portal.targetMap as MapPresetId;
+      }
+
+      const newSceneId = `scene-${Date.now()}`;
+      const newScene: RoomScene = {
+        id: newSceneId,
+        name: sceneTitle,
+        presetName,
+        cols: 20,
+        rows: 20,
+        tiles: targetTiles,
+        annotations: targetAnns,
+      };
+
+      handleCreateScene(newScene);
+      handleMoveMiniToScene(miniId, newSceneId, targetX, targetZ);
+    },
+    [effectiveScenes, handleCreateScene, handleMoveMiniToScene]
+  );
+
+  const handleTriggerPortal = useCallback(
+    (portal: MapAnnotation, miniId: string) => {
+      const mini = roomStateRef.current.miniatures[miniId];
+      if (!mini) return;
+      if (portal.autoTeleport) {
+        audioSynth.playPortalTeleport();
+        handleExecutePortalTeleport(portal, miniId);
+      } else {
+        audioSynth.playPortalTeleport();
+        setActivePortalPrompt({
+          portal,
+          miniId,
+          miniName: mini.name,
+        });
+      }
+    },
+    [handleExecutePortalTeleport]
+  );
+
+  const handleClearCharacters = useCallback(() => {
+    const curr = roomStateRef.current;
+    const nextMinis: Record<string, MiniatureData> = {};
+    for (const [id, m] of Object.entries(curr.miniatures || {})) {
+      if (m.isPropOnly) {
+        nextMinis[id] = m;
+      }
+    }
+    const before = cloneSnapshot(curr.presetName, curr.tiles, curr.miniatures, curr.annotations);
+    const after = cloneSnapshot(curr.presetName, curr.tiles, nextMinis, curr.annotations);
+    recordHistory({
+      kind: 'preset',
+      label: 'Limpar todos os personagens do mapa',
+      before,
+      after,
+    });
+    setRoomState((prev) => ({
+      ...prev,
+      miniatures: nextMinis,
+    }));
+    setSelectedMiniId(null);
+    sendWs({
+      type: 'map:restore',
+      payload: {
+        presetName: curr.presetName,
+        tiles: curr.tiles,
+        miniatures: nextMinis,
+        annotations: curr.annotations,
+      },
+    });
+  }, [cloneSnapshot, recordHistory, sendWs]);
+
+  const handleSaveCurrentScenario = useCallback(
+    (name: string, description?: string) => {
+      const curr = roomStateRef.current;
+      const saved = saveScenario(name, curr.tiles, curr.miniatures, curr.annotations || {}, {
+        description,
+        cols: curr.cols,
+        rows: curr.rows,
+        music: curr.music,
+      });
+      setSavedScenariosList(getSavedScenarios());
+      return saved;
+    },
+    []
+  );
+
+  const handleDeleteScenario = useCallback((id: string) => {
+    deleteScenario(id);
+    setSavedScenariosList(getSavedScenarios());
+  }, []);
+
+  const handleExportScenario = useCallback((scenario: SavedScenario) => {
+    exportScenarioAsJson(scenario);
+  }, []);
+
+  const handleImportScenario = useCallback(
+    async (file: File) => {
+      try {
+        const imported = await importScenarioFromJson(file);
+        setSavedScenariosList(getSavedScenarios());
+        handleLoadScenarioOrPreset(imported.id, true);
+      } catch (err: any) {
+        alert(err?.message || 'Falha ao importar cenário JSON.');
+      }
+    },
+    [handleLoadScenarioOrPreset]
+  );
+
+  const handleSaveActorToLibrary = useCallback((mini: MiniatureData) => {
+    saveActorFromMini(mini);
+    setSavedActorsList(getSavedActors());
+  }, []);
+
+  const handleSpawnActorFromLibrary = useCallback(
+    (actor: SavedActorTemplate) => {
+      const now = Date.now();
+      const id = `actor-${now.toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
+      const newMini: MiniatureData = {
+        id,
+        name: actor.name,
+        format: actor.format,
+        assetId: actor.assetId,
+        assetName: actor.assetName,
+        remoteUrl: actor.remoteUrl,
+        x: 8,
+        z: 8,
+        rotationY: 0,
+        footprint: actor.footprint,
+        scaleMultiplier: actor.scaleMultiplier,
+        fixZUp: actor.fixZUp,
+        showBase: actor.showBase,
+        baseStyle: actor.baseStyle,
+        color: actor.color,
+        finish: actor.finish,
+        hp: actor.hp,
+        maxHp: actor.maxHp,
+        ownerName: actor.type === 'monster' ? '__GM__' : (actor.ownerName || ''),
+        isPropOnly: false,
+        sheet: actor.sheet ? JSON.parse(JSON.stringify(actor.sheet)) : undefined,
+      };
+
+      setRoomState((prev) => ({
+        ...prev,
+        miniatures: {
+          ...prev.miniatures,
+          [id]: newMini,
+        },
+      }));
+      setSelectedMiniId(id);
+      sendWs({ type: 'mini:create', payload: { mini: newMini } });
+      audioSynth.playMiniDrop();
+    },
+    [sendWs]
+  );
+
+  const handleDeleteSavedActor = useCallback((id: string) => {
+    deleteSavedActor(id);
+    setSavedActorsList(getSavedActors());
+  }, []);
+
+  const handleExportActor = useCallback((actor: SavedActorTemplate) => {
+    exportActorAsJson(actor);
+  }, []);
+
+  const handleImportActor = useCallback(
+    async (file: File) => {
+      try {
+        const imported = await importActorFromJson(file);
+        setSavedActorsList(getSavedActors());
+        handleSpawnActorFromLibrary(imported);
+      } catch (err: any) {
+        alert(err?.message || 'Falha ao importar ficha JSON.');
+      }
+    },
+    [handleSpawnActorFromLibrary]
   );
 
   const handleRollDice = useCallback(
@@ -1536,9 +2233,12 @@ export default function App() {
   };
 
   return (
-    <main className="relative w-screen h-screen overflow-hidden bg-[#0d1015]">
+    <main
+      className="relative w-screen h-screen overflow-hidden bg-[#0d1015]"
+      style={{ height: '100dvh' }}
+    >
       <TabletopViewport
-        roomState={roomState}
+        roomState={sceneFilteredRoomState}
         role={role}
         gmLayer={gmLayer}
         userName={userName}
@@ -1615,7 +2315,6 @@ export default function App() {
           initialRoomId={roomId}
           firebaseUser={firebaseUser}
           savedRooms={savedRooms}
-          onGoogleSignIn={handleGoogleSignIn}
           onGoogleSignOut={handleGoogleSignOut}
           onRoleChange={setRole}
           onEnter={handleEnterRoom}
@@ -1632,7 +2331,6 @@ export default function App() {
           firebaseUser={firebaseUser}
           cloudSyncing={cloudSyncing}
           cloudSavedAt={cloudSavedAt}
-          onGoogleSignIn={handleGoogleSignIn}
           onGoogleSignOut={handleGoogleSignOut}
           onSaveCloud={() => handleSaveCloud(false)}
           onLoadCloud={() => handleLoadCloud(false)}
@@ -1670,6 +2368,7 @@ export default function App() {
           onUpdateAnnotation={handleUpdateAnnotation}
           onDeleteAnnotation={handleDeleteAnnotation}
           onChangePreset={handleChangePreset}
+          onResizeBoard={handleResizeBoard}
           onRollDice={handleRollDice}
           onCameraPreset={(preset) =>
             setCameraCommand((prev) => ({ preset, seq: (prev?.seq || 0) + 1 }))
@@ -1686,6 +2385,33 @@ export default function App() {
           onPrevTurn={handlePrevTurn}
           onSetTurn={handleSetTurn}
           onEndCombat={handleEndCombat}
+          savedScenarios={savedScenariosList}
+          onSaveCurrentScenario={handleSaveCurrentScenario}
+          onLoadScenario={(id) => handleLoadScenarioOrPreset(id, true)}
+          onDeleteScenario={handleDeleteScenario}
+          onExportScenario={handleExportScenario}
+          onImportScenario={handleImportScenario}
+          onClearCharacters={handleClearCharacters}
+          savedActors={savedActorsList}
+          onSaveActorToLibrary={handleSaveActorToLibrary}
+          onSpawnActorFromLibrary={handleSpawnActorFromLibrary}
+          onDeleteSavedActor={handleDeleteSavedActor}
+          onExportActor={handleExportActor}
+          onImportActor={handleImportActor}
+          activePortalPrompt={activePortalPrompt}
+          onConfirmPortalTeleport={() => {
+            if (activePortalPrompt) {
+              handleExecutePortalTeleport(activePortalPrompt.portal, activePortalPrompt.miniId);
+            }
+          }}
+          onCancelPortalTeleport={() => setActivePortalPrompt(null)}
+          scenes={effectiveScenes}
+          activeSceneId={viewSceneId}
+          onSelectScene={handleSelectScene}
+          onCreateScene={handleCreateScene}
+          onDeleteScene={handleDeleteScene}
+          onMoveMiniToScene={handleMoveMiniToScene}
+          onGatherAllToScene={handleGatherAllToScene}
         />
       )}
 

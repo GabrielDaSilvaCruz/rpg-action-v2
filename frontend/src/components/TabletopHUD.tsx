@@ -18,7 +18,11 @@ import {
   ExternalLink,
   Eye,
   EyeOff,
+  Bookmark,
+  DoorOpen,
+  Download,
   FolderDown,
+  FolderPlus,
   Globe,
   Hammer,
   Image as ImageIcon,
@@ -26,6 +30,7 @@ import {
   Link2,
   Lock,
   LogOut,
+  Map,
   MapPin,
   MousePointer,
   Music,
@@ -66,10 +71,14 @@ import {
   ModelDimensionsInfo,
   ModelFormat,
   Role,
+  RoomScene,
   RoomState,
+  SavedActorTemplate,
+  SavedScenario,
   TerrainKind,
   tileKey,
 } from '../types/vtt';
+import { buildMapPreset } from '../utils/mapPresets';
 import { AnnotationBrush, CameraPreset, RulerLineCoords, SculptBrush } from './TabletopViewport';
 import {
   fetchAssetBuffer,
@@ -112,7 +121,6 @@ interface TabletopHUDProps {
   firebaseUser: User | null;
   cloudSyncing: boolean;
   cloudSavedAt: number | null;
-  onGoogleSignIn: () => void;
   onGoogleSignOut: () => void;
   onSaveCloud: () => void;
   onLoadCloud: () => void;
@@ -150,6 +158,7 @@ interface TabletopHUDProps {
   onUpdateAnnotation: (id: string, patch: Partial<MapAnnotation>) => void;
   onDeleteAnnotation: (id: string) => void;
   onChangePreset: (preset: MapPresetId) => void;
+  onResizeBoard: (cols: number, rows: number) => void;
   onRollDice: (die: number, modifier?: number) => void;
   onCameraPreset: (preset: CameraPreset) => void;
   onToggleMute: () => void;
@@ -169,6 +178,33 @@ interface TabletopHUDProps {
   onPrevTurn: () => void;
   onSetTurn: (turnIndex: number) => void;
   onEndCombat: () => void;
+  savedScenarios?: SavedScenario[];
+  onSaveCurrentScenario?: (name: string, description?: string) => SavedScenario;
+  onLoadScenario?: (scenarioIdOrPreset: string) => void;
+  onDeleteScenario?: (id: string) => void;
+  onExportScenario?: (scenario: SavedScenario) => void;
+  onImportScenario?: (file: File) => void;
+  onClearCharacters?: () => void;
+  savedActors?: SavedActorTemplate[];
+  onSaveActorToLibrary?: (mini: MiniatureData) => void;
+  onSpawnActorFromLibrary?: (actor: SavedActorTemplate) => void;
+  onDeleteSavedActor?: (id: string) => void;
+  onExportActor?: (actor: SavedActorTemplate) => void;
+  onImportActor?: (file: File) => void;
+  activePortalPrompt?: {
+    portal: MapAnnotation;
+    miniId: string;
+    miniName: string;
+  } | null;
+  onConfirmPortalTeleport?: () => void;
+  onCancelPortalTeleport?: () => void;
+  scenes?: Record<string, RoomScene>;
+  activeSceneId?: string;
+  onSelectScene?: (sceneId: string) => void;
+  onCreateScene?: (scene: RoomScene) => void;
+  onDeleteScene?: (sceneId: string) => void;
+  onMoveMiniToScene?: (miniId: string, sceneId: string, targetX?: number, targetZ?: number) => void;
+  onGatherAllToScene?: (sceneId: string) => void;
 }
 
 const TERRAINS: { id: TerrainKind; label: string; swatch: string }[] = [
@@ -209,6 +245,7 @@ const MINI_COLORS = ['#d97706', '#0ea5e9', '#10b981', '#ef4444', '#a855f7', '#a8
 
 const ANNOTATION_KINDS: { id: AnnotationKind; label: string }[] = [
   { id: 'marker', label: 'Marcador Texto' },
+  { id: 'portal', label: '🚪 Área de Transferência / Portal' },
   { id: 'circle', label: 'Circulo' },
   { id: 'square', label: 'Quadrado' },
   { id: 'cone', label: 'Cone 60°' },
@@ -253,7 +290,6 @@ export const TabletopHUD: React.FC<TabletopHUDProps> = ({
   firebaseUser,
   cloudSyncing,
   cloudSavedAt,
-  onGoogleSignIn,
   onGoogleSignOut,
   onSaveCloud,
   onLoadCloud,
@@ -291,6 +327,7 @@ export const TabletopHUD: React.FC<TabletopHUDProps> = ({
   onUpdateAnnotation,
   onDeleteAnnotation,
   onChangePreset,
+  onResizeBoard,
   onRollDice,
   onCameraPreset,
   onToggleMute,
@@ -305,8 +342,36 @@ export const TabletopHUD: React.FC<TabletopHUDProps> = ({
   onPrevTurn,
   onSetTurn,
   onEndCombat,
+  savedScenarios = [],
+  onSaveCurrentScenario,
+  onLoadScenario,
+  onDeleteScenario,
+  onExportScenario,
+  onImportScenario,
+  onClearCharacters,
+  savedActors = [],
+  onSaveActorToLibrary,
+  onSpawnActorFromLibrary,
+  onDeleteSavedActor,
+  onExportActor,
+  onImportActor,
+  activePortalPrompt,
+  onConfirmPortalTeleport,
+  onCancelPortalTeleport,
+  scenes,
+  activeSceneId,
+  onSelectScene,
+  onCreateScene,
+  onDeleteScene,
+  onMoveMiniToScene,
+  onGatherAllToScene,
 }) => {
   const [dockCollapsed, setDockCollapsed] = useState(false);
+  const [showAddMapModal, setShowAddMapModal] = useState(false);
+  const [newMapName, setNewMapName] = useState('');
+  const [newMapTemplate, setNewMapTemplate] = useState<string>('tavern');
+  const [boardCols, setBoardCols] = useState(String(roomState?.cols || 16));
+  const [boardRows, setBoardRows] = useState(String(roomState?.rows || 16));
   const [gmTab, setGmTab] = useState<'map' | 'minis' | 'scale' | 'sheets' | 'annotations' | 'music' | 'players'>('map');
   const [assetSourceView, setAssetSourceView] = useState<'catalog' | 'import'>('catalog');
   const [catalogFilter, setCatalogFilter] = useState<'all' | 'scenery' | CatalogCategory>('all');
@@ -317,8 +382,27 @@ export const TabletopHUD: React.FC<TabletopHUDProps> = ({
   const [showSources, setShowSources] = useState(false);
   const [copiedLink, setCopiedLink] = useState(false);
   const [dicePaletteOpen, setDicePaletteOpen] = useState(false);
+
+  useEffect(() => {
+    setBoardCols(String(roomState?.cols || 16));
+    setBoardRows(String(roomState?.rows || 16));
+  }, [roomState?.cols, roomState?.rows]);
   const [diceModifier, setDiceModifier] = useState<number>(0);
   const [showDiceLog, setShowDiceLog] = useState(false);
+
+  // Modais de Cenários e Biblioteca Pessoal
+  const [showSaveScenarioModal, setShowSaveScenarioModal] = useState(false);
+  const [newScenarioName, setNewScenarioName] = useState('');
+  const [newScenarioDesc, setNewScenarioDesc] = useState('');
+  const [showScenarioManagerModal, setShowScenarioManagerModal] = useState(false);
+  const scenarioImportInputRef = useRef<HTMLInputElement | null>(null);
+  const actorImportInputRef = useRef<HTMLInputElement | null>(null);
+  const [libraryToast, setLibraryToast] = useState<string | null>(null);
+
+  const showToast = (msg: string) => {
+    setLibraryToast(msg);
+    setTimeout(() => setLibraryToast(null), 3000);
+  };
 
   // Monster & Hero-for-Player sheet creator state (GM)
   const [newMonsterTplId, setNewMonsterTplId] = useState<string>(MONSTER_SHEET_TEMPLATES[0].id);
@@ -1184,110 +1268,236 @@ export const TabletopHUD: React.FC<TabletopHUDProps> = ({
   );
 
   return (
-    <div className="fixed inset-0 z-20 pointer-events-none flex flex-col justify-between p-4">
+    <>
+      <div className="fixed inset-0 z-20 pointer-events-none flex flex-col justify-between p-2 sm:p-4">
       {/* Top Perimeter Bar - Responsive Single-Line Ergonomic Header */}
       <div className="flex flex-wrap sm:flex-nowrap items-center justify-between gap-2 px-1">
-        {/* Top-Left: Room, Role, Online & Mute */}
-        <div className="pointer-events-auto flex items-center gap-1.5 sm:gap-2 px-2.5 py-1.5 bg-[#12161e]/95 border border-stone-700/60 rounded-xl shadow-lg">
-          <div className="flex items-center gap-1.5 pr-1.5 border-r border-stone-800">
-            <span className="font-display text-xs font-bold text-amber-400 whitespace-nowrap">
-              RPG
-            </span>
-            <span className="text-xs font-mono text-stone-300 font-medium whitespace-nowrap">
-              {roomState?.roomId || 'MESA-01'}
-            </span>
-            <button
-              type="button"
-              onClick={copyInviteLink}
-              title="Copiar link de convite para a mesa"
-              className="p-1 hover:bg-[#1b212d] text-stone-400 hover:text-amber-300 rounded transition-colors cursor-pointer"
-            >
-              {copiedLink ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
-            </button>
-          </div>
-
-          {/* Role switcher */}
-          <button
-            type="button"
-            onClick={() => onSwitchRole(role === 'gm' ? 'player' : 'gm')}
-            title="Alternar visão Mestre / Jogador"
-            className="flex items-center gap-1 px-2 py-0.5 text-xs bg-[#1b212d] hover:bg-[#242c3b] text-stone-300 border border-stone-700/70 rounded-md transition-colors whitespace-nowrap cursor-pointer"
-          >
-            {role === 'gm' ? <Crown className="w-3 h-3 text-amber-400" /> : <Shield className="w-3 h-3 text-sky-400" />}
-            <span className="hidden sm:inline">{role === 'gm' ? 'Mestre' : 'Jogador'}</span>
-          </button>
-
-          {/* GM Layer Filter (Filtro de Camadas do Mestre) */}
-          {role === 'gm' && onSetGmLayer && (
-            <div className="flex items-center p-0.5 bg-[#0b0e14] border border-stone-800 rounded-md text-[11px] ml-0.5">
-              <span className="text-[10px] text-stone-500 font-medium px-1 hidden md:inline">Camada:</span>
+        {/* Top-Left: Room, Role, Online & Mute + Multi-Map Bar diretamente abaixo com o mesmo design */}
+        <div className="flex max-w-full flex-col gap-1 items-start">
+          <div className="pointer-events-auto flex max-w-full items-center gap-1.5 sm:gap-2 overflow-x-auto scrollbar-none px-2.5 py-1.5 bg-[#12161e]/95 border border-stone-700/60 rounded-xl shadow-lg">
+            <div className="flex items-center gap-1.5 pr-1.5 border-r border-stone-800">
+              <img
+                src="/logo.png"
+                alt="Logo"
+                className="w-5 h-5 rounded-full object-cover border border-amber-500/60 shadow-[0_0_8px_rgba(245,158,11,0.3)] shrink-0"
+              />
+              <span className="font-display text-xs font-bold text-amber-400 whitespace-nowrap">
+                RPG
+              </span>
+              <span className="text-xs font-mono text-stone-300 font-medium whitespace-nowrap">
+                {roomState?.roomId || 'MESA-01'}
+              </span>
               <button
                 type="button"
-                onClick={() => onSetGmLayer('all')}
-                title="Camada Todas: Seleciona qualquer miniatura ou prop no tabuleiro"
-                className={`px-1.5 py-0.5 rounded cursor-pointer transition-colors ${
-                  gmLayer === 'all'
-                    ? 'bg-amber-600 text-stone-950 font-bold'
-                    : 'text-stone-400 hover:text-stone-200'
-                }`}
+                onClick={copyInviteLink}
+                title="Copiar link de convite para a mesa"
+                className="p-1 hover:bg-[#1b212d] text-stone-400 hover:text-amber-300 rounded transition-colors cursor-pointer"
               >
-                Todas ({charCount + propCount})
-              </button>
-              <button
-                type="button"
-                onClick={() => onSetGmLayer('characters')}
-                title="Camada Personagens: Seleciona APENAS Heróis e Monstros (ignora árvores, muros e móveis)"
-                className={`px-1.5 py-0.5 rounded cursor-pointer transition-colors ${
-                  gmLayer === 'characters'
-                    ? 'bg-sky-600 text-white font-bold'
-                    : 'text-stone-400 hover:text-stone-200'
-                }`}
-              >
-                🧙 Personagens ({charCount})
-              </button>
-              <button
-                type="button"
-                onClick={() => onSetGmLayer('props')}
-                title="Camada Cenário: Seleciona APENAS Objetos e Props de Cenário (ignora personagens)"
-                className={`px-1.5 py-0.5 rounded cursor-pointer transition-colors ${
-                  gmLayer === 'props'
-                    ? 'bg-emerald-600 text-stone-950 font-bold'
-                    : 'text-stone-400 hover:text-stone-200'
-                }`}
-              >
-                🏰 Cenário ({propCount})
+                {copiedLink ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
               </button>
             </div>
-          )}
 
-          {/* Online count */}
-          <span className="flex items-center gap-1 text-[11px] font-mono text-stone-400 whitespace-nowrap">
-            <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
-            <span>{connected ? `${roomState?.users.length || 1}` : '...'}</span>
-          </span>
-
-          {/* Sound FX Mute */}
-          <button
-            type="button"
-            onClick={onToggleMute}
-            aria-label={muted ? 'Ativar som dos efeitos' : 'Silenciar som dos efeitos'}
-            className="p-1 text-stone-400 hover:text-amber-400 transition-colors cursor-pointer"
-          >
-            {muted ? <VolumeX className="w-3.5 h-3.5 text-rose-400" /> : <Volume2 className="w-3.5 h-3.5" />}
-          </button>
-
-          {/* GM Ask Initiative button */}
-          {role === 'gm' && !roomState?.combat?.active && (
+            {/* Role switcher */}
             <button
               type="button"
-              onClick={onStartCombat}
-              title="Pedir iniciativa para todos os combatentes"
-              className="flex items-center gap-1 px-2 py-0.5 text-xs font-semibold bg-gradient-to-r from-amber-600 to-amber-500 hover:from-amber-500 text-stone-950 rounded-md shadow border border-amber-400/50 transition-all cursor-pointer whitespace-nowrap animate-pulse ml-0.5"
+              onClick={() => onSwitchRole(role === 'gm' ? 'player' : 'gm')}
+              title="Alternar visão Mestre / Jogador"
+              className="flex items-center gap-1 px-2 py-0.5 text-xs bg-[#1b212d] hover:bg-[#242c3b] text-stone-300 border border-stone-700/70 rounded-md transition-colors whitespace-nowrap cursor-pointer"
             >
-              <Swords className="w-3 h-3" />
-              <span className="hidden md:inline">Iniciativa</span>
+              {role === 'gm' ? <Crown className="w-3 h-3 text-amber-400" /> : <Shield className="w-3 h-3 text-sky-400" />}
+              <span className="hidden sm:inline">{role === 'gm' ? 'Mestre' : 'Jogador'}</span>
             </button>
-          )}
+
+            {/* GM Layer Filter (Filtro de Camadas do Mestre) */}
+            {role === 'gm' && onSetGmLayer && (
+              <div className="flex items-center p-0.5 bg-[#0b0e14] border border-stone-800 rounded-md text-[11px] ml-0.5">
+                <span className="text-[10px] text-stone-500 font-medium px-1 hidden md:inline">Camada:</span>
+                <button
+                  type="button"
+                  onClick={() => onSetGmLayer('all')}
+                  title="Camada Todas: Seleciona qualquer miniatura ou prop no tabuleiro"
+                  className={`px-1.5 py-0.5 rounded cursor-pointer transition-colors ${
+                    gmLayer === 'all'
+                      ? 'bg-amber-600 text-stone-950 font-bold'
+                      : 'text-stone-400 hover:text-stone-200'
+                  }`}
+                >
+                  Todas ({charCount + propCount})
+                </button>
+                <button
+                  type="button"
+                  onClick={() => onSetGmLayer('characters')}
+                  title="Camada Personagens: Seleciona APENAS Heróis e Monstros (ignora árvores, muros e móveis)"
+                  className={`px-1.5 py-0.5 rounded cursor-pointer transition-colors ${
+                    gmLayer === 'characters'
+                      ? 'bg-sky-600 text-white font-bold'
+                      : 'text-stone-400 hover:text-stone-200'
+                  }`}
+                >
+                  🧙 Personagens ({charCount})
+                </button>
+                <button
+                  type="button"
+                  onClick={() => onSetGmLayer('props')}
+                  title="Camada Cenário: Seleciona APENAS Objetos e Props de Cenário (ignora personagens)"
+                  className={`px-1.5 py-0.5 rounded cursor-pointer transition-colors ${
+                    gmLayer === 'props'
+                      ? 'bg-emerald-600 text-stone-950 font-bold'
+                      : 'text-stone-400 hover:text-stone-200'
+                  }`}
+                >
+                  🏰 Cenário ({propCount})
+                </button>
+              </div>
+            )}
+
+            {/* Online count */}
+            <span className="flex items-center gap-1 text-[11px] font-mono text-stone-400 whitespace-nowrap">
+              <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
+              <span>{connected ? `${roomState?.users.length || 1}` : '...'}</span>
+            </span>
+
+            {/* Sound FX Mute */}
+            <button
+              type="button"
+              onClick={onToggleMute}
+              aria-label={muted ? 'Ativar som dos efeitos' : 'Silenciar som dos efeitos'}
+              className="p-1 text-stone-400 hover:text-amber-400 transition-colors cursor-pointer"
+            >
+              {muted ? <VolumeX className="w-3.5 h-3.5 text-rose-400" /> : <Volume2 className="w-3.5 h-3.5" />}
+            </button>
+
+            {/* GM Ask Initiative button */}
+            {role === 'gm' && !roomState?.combat?.active && (
+              <button
+                type="button"
+                onClick={onStartCombat}
+                title="Pedir iniciativa para todos os combatentes"
+                className="flex items-center gap-1 px-2 py-0.5 text-xs font-semibold bg-gradient-to-r from-amber-600 to-amber-500 hover:from-amber-500 text-stone-950 rounded-md shadow border border-amber-400/50 transition-all cursor-pointer whitespace-nowrap animate-pulse ml-0.5"
+              >
+                <Swords className="w-3 h-3" />
+                <span className="hidden md:inline">Iniciativa</span>
+              </button>
+            )}
+          </div>
+
+          {/* Multi-Map Scene Selector Bar - Diretamente abaixo com o mesmo design do logo */}
+          <div className="pointer-events-auto flex items-center gap-1.5 px-2.5 py-1 bg-[#12161e]/95 border border-stone-700/60 rounded-xl shadow-lg text-xs overflow-x-auto max-w-full">
+            <div className="flex items-center gap-1.5 pr-1.5 border-r border-stone-800 text-xs font-semibold text-amber-400 shrink-0">
+              <Map className="w-3.5 h-3.5 text-amber-400" />
+              <span className="hidden sm:inline">Mapas:</span>
+            </div>
+
+            {/* Scene Tabs */}
+            <div className="flex items-center gap-1 overflow-x-auto scrollbar-none py-0.5">
+              {scenes &&
+                Object.values(scenes).map((scene) => {
+                  const isCurrentView = (activeSceneId || 'scene-default') === scene.id;
+                  const sceneUsers = (roomState?.users || []).filter((u) => {
+                    if (u.currentSceneId === scene.id) return true;
+                    const userMini = Object.values(roomState?.miniatures || {}).find(
+                      (m) =>
+                        (m.sceneId || 'scene-default') === scene.id &&
+                        m.ownerName &&
+                        m.ownerName.toLowerCase() === u.name.toLowerCase()
+                    );
+                    return Boolean(userMini);
+                  });
+
+                  if (role === 'player') {
+                    if (!isCurrentView) return null;
+                    return (
+                      <div
+                        key={scene.id}
+                        className="flex items-center gap-1.5 px-2 py-0.5 text-xs bg-amber-500/20 border border-amber-500/60 rounded-md text-amber-300 font-semibold"
+                      >
+                        <MapPin className="w-3 h-3 text-amber-400" />
+                        <span>{scene.name}</span>
+                      </div>
+                    );
+                  }
+
+                  return (
+                    <div
+                      key={scene.id}
+                      className={`flex items-center gap-1 px-2 py-0.5 text-xs rounded-md border transition-all cursor-pointer shrink-0 ${
+                        isCurrentView
+                          ? 'bg-amber-600 text-stone-950 font-bold border-amber-500 shadow-sm'
+                          : 'bg-[#1b212d] border-stone-700/70 text-stone-300 hover:text-stone-100 hover:bg-[#242c3b]'
+                      }`}
+                      onClick={() => onSelectScene?.(scene.id)}
+                      title={`Alternar visão do Mestre para "${scene.name}"`}
+                    >
+                      <span>{scene.name}</span>
+                      {sceneUsers.length > 0 && (
+                        <span
+                          className={`flex items-center gap-0.5 text-[10px] px-1 py-0.2 rounded-full font-mono ${
+                            isCurrentView
+                              ? 'bg-stone-950 text-amber-300'
+                              : 'bg-stone-900 text-sky-300 border border-stone-700'
+                          }`}
+                          title={`Jogadores aqui: ${sceneUsers.map((u) => u.name).join(', ')}`}
+                        >
+                          <Users className="w-2.5 h-2.5" />
+                          <span>{sceneUsers.length}</span>
+                        </span>
+                      )}
+                      {Object.keys(scenes).length > 1 && (
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            if (confirm(`Deseja realmente remover o mapa "${scene.name}" da mesa?`)) {
+                              onDeleteScene?.(scene.id);
+                            }
+                          }}
+                          title="Excluir este mapa da mesa"
+                          className={`ml-0.5 p-0.5 transition-colors cursor-pointer rounded ${
+                            isCurrentView
+                              ? 'text-stone-950 hover:text-rose-950'
+                              : 'text-stone-500 hover:text-rose-400'
+                          }`}
+                        >
+                          <X className="w-3 h-3" />
+                        </button>
+                      )}
+                    </div>
+                  );
+                })}
+            </div>
+
+            {/* GM Map Actions: Add New Map & Gather All Players */}
+            {role === 'gm' && (
+              <div className="flex items-center gap-1 pl-1.5 border-l border-stone-800 shrink-0">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setNewMapName('');
+                    setShowAddMapModal(true);
+                  }}
+                  title="Adicionar um novo mapa/cenário à mesa"
+                  className="flex items-center gap-1 px-2 py-0.5 text-xs bg-[#1b212d] hover:bg-[#242c3b] text-amber-300 border border-stone-700/70 rounded-md font-medium transition-colors cursor-pointer whitespace-nowrap"
+                >
+                  <Plus className="w-3 h-3" />
+                  <span>Novo</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (confirm('Deseja reunir todos os heróis no mapa atual?')) {
+                      onGatherAllToScene?.(activeSceneId || 'scene-default');
+                    }
+                  }}
+                  title="Teletransportar todos os personagens para este mapa agora"
+                  className="flex items-center gap-1 px-2 py-0.5 text-xs bg-[#1b212d] hover:bg-[#242c3b] text-sky-300 border border-stone-700/70 rounded-md font-medium transition-colors cursor-pointer whitespace-nowrap"
+                >
+                  <Users className="w-3 h-3" />
+                  <span className="hidden md:inline">Reunir</span>
+                </button>
+              </div>
+            )}
+          </div>
         </div>
 
         {/* Top-Center: Compact Synchronized YouTube Player */}
@@ -1839,7 +2049,7 @@ export const TabletopHUD: React.FC<TabletopHUDProps> = ({
         </button>
 
         {!dockCollapsed && (
-          <div className="pointer-events-auto w-full max-w-[1000px] bg-[#12161e]/95 border border-stone-700/70 rounded-xl shadow-2xl p-3">
+          <div className="pointer-events-auto min-h-0 w-full max-w-[1000px] max-h-[45dvh] overflow-y-auto bg-[#12161e]/95 border border-stone-700/70 rounded-xl shadow-2xl p-2 sm:p-3 lg:max-h-[50dvh]">
             {role === 'gm' ? (
               <div>
                 {/* GM Top Mode & Tab Strip */}
@@ -2067,6 +2277,41 @@ export const TabletopHUD: React.FC<TabletopHUDProps> = ({
                     </div>
 
                     <div className="flex flex-wrap items-center gap-2">
+                      <div className="flex flex-wrap items-center gap-2 rounded-lg border border-stone-700/70 bg-[#181d27] px-2 py-1">
+                        <span className="text-xs font-medium text-amber-300">Tamanho do tabuleiro</span>
+                        <label className="flex items-center gap-1 text-[11px] text-stone-400">
+                          Colunas
+                          <input
+                            type="number"
+                            min={4}
+                            max={64}
+                            value={boardCols}
+                            onChange={(e) => setBoardCols(e.target.value)}
+                            className="w-14 rounded border border-stone-700 bg-[#0b0e14] px-1.5 py-1 text-center text-stone-100"
+                            aria-label="Quantidade de colunas do tabuleiro"
+                          />
+                        </label>
+                        <label className="flex items-center gap-1 text-[11px] text-stone-400">
+                          Linhas
+                          <input
+                            type="number"
+                            min={4}
+                            max={64}
+                            value={boardRows}
+                            onChange={(e) => setBoardRows(e.target.value)}
+                            className="w-14 rounded border border-stone-700 bg-[#0b0e14] px-1.5 py-1 text-center text-stone-100"
+                            aria-label="Quantidade de linhas do tabuleiro"
+                          />
+                        </label>
+                        <button
+                          type="button"
+                          onClick={() => onResizeBoard(Number(boardCols), Number(boardRows))}
+                          className="rounded bg-amber-600 px-2 py-1 text-[11px] font-semibold text-stone-950 transition-colors hover:bg-amber-500"
+                        >
+                          Aplicar
+                        </button>
+                      </div>
+
                       <div className="flex items-center gap-1 bg-[#181d27] border border-stone-700/70 rounded-lg px-2 py-1">
                         <span className="text-xs text-stone-400">Altura:</span>
                         {[0, 1, 2, 3, 4].map((lvl) => (
@@ -2103,14 +2348,75 @@ export const TabletopHUD: React.FC<TabletopHUDProps> = ({
 
                       <select
                         value={roomState?.presetName || 'blank'}
-                        onChange={(e) => onChangePreset(e.target.value as MapPresetId)}
+                        onChange={(e) => {
+                          const val = e.target.value;
+                          if (val.startsWith('saved:')) {
+                            onLoadScenario?.(val.slice(6));
+                          } else {
+                            onChangePreset(val as MapPresetId);
+                          }
+                        }}
                         className="px-2.5 py-1.5 text-xs bg-[#181d27] border border-stone-700/70 rounded-lg text-amber-300 focus:outline-none"
                       >
-                        <option value="blank">Mapa: Tabuleiro Limpo (Padrao)</option>
-                        <option value="crypt">Mapa: Cripta Nordica (Skyrim)</option>
-                        <option value="tavern">Mapa: Taverna de Whiterun</option>
-                        <option value="arena">Mapa: Pico dos Dragoes</option>
+                        {savedScenarios.length > 0 && (
+                          <optgroup label="── Meus Cenários Salvos ──">
+                            {savedScenarios.map((sc) => (
+                              <option key={sc.id} value={`saved:${sc.id}`}>
+                                🗺️ {sc.name}
+                              </option>
+                            ))}
+                          </optgroup>
+                        )}
+                        <optgroup label="── Mapas Padrão ──">
+                          <option value="blank">Mapa: Tabuleiro Limpo (Padrão)</option>
+                          <option value="crypt">Mapa: Cripta Nórdica (Skyrim)</option>
+                          <option value="tavern">Mapa: Taverna de Whiterun</option>
+                          <option value="arena">Mapa: Pico dos Dragões</option>
+                        </optgroup>
                       </select>
+
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setNewScenarioName(
+                            `Cenário ${new Date().toLocaleDateString('pt-BR')} ${new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}`
+                          );
+                          setNewScenarioDesc('');
+                          setShowSaveScenarioModal(true);
+                        }}
+                        title="Salvar este mapa completo (elevação, pisos, props 3D, música)"
+                        className="flex items-center gap-1.5 px-2.5 py-1.5 text-xs bg-emerald-600 hover:bg-emerald-500 text-stone-950 font-semibold rounded-lg shadow cursor-pointer transition-colors"
+                      >
+                        <Save className="w-3.5 h-3.5" />
+                        <span>Salvar Cenário</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => setShowScenarioManagerModal(true)}
+                        title="Gerenciar cenários salvos, importar e exportar JSON"
+                        className="flex items-center gap-1.5 px-2.5 py-1.5 text-xs bg-[#181d27] hover:bg-[#222938] border border-stone-700/70 rounded-lg text-amber-300 cursor-pointer"
+                      >
+                        <FolderPlus className="w-3.5 h-3.5" />
+                        <span>Cenários ({savedScenarios.length})</span>
+                      </button>
+
+                      {charCount > 0 && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (confirm('Deseja remover todos os personagens e monstros do tabuleiro, mantendo todo o cenário e construções 3D?')) {
+                              onClearCharacters?.();
+                              showToast('Tabuleiro limpo: todos os personagens foram removidos!');
+                            }
+                          }}
+                          title="Remover todos os personagens e monstros do tabuleiro, mantendo cenário e props intactos"
+                          className="flex items-center gap-1.5 px-2.5 py-1.5 text-xs bg-rose-950/60 hover:bg-rose-900 border border-rose-500/40 rounded-lg text-rose-300 cursor-pointer transition-colors"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                          <span>Limpar Personagens ({charCount})</span>
+                        </button>
+                      )}
                     </div>
                   </div>
                 )}
@@ -2785,6 +3091,27 @@ export const TabletopHUD: React.FC<TabletopHUDProps> = ({
                             {selectedMini.isPropOnly ? '🏰 Cenário 3D' : '🧙 Personagem'}
                           </button>
 
+                          {role === 'gm' && scenes && Object.keys(scenes).length > 0 && (
+                            <div className="flex items-center gap-1 bg-[#10141c] px-2 py-0.5 rounded-lg border border-stone-800">
+                              <MapPin className="w-3.5 h-3.5 text-amber-400" />
+                              <span className="text-[11px] text-stone-400">Mapa:</span>
+                              <select
+                                value={selectedMini.sceneId || activeSceneId || Object.keys(scenes)[0]}
+                                onChange={(e) => {
+                                  onMoveMiniToScene?.(selectedMini.id, e.target.value);
+                                }}
+                                title="Mover esta miniatura para outro mapa da mesa"
+                                className="bg-[#181d27] text-amber-300 font-semibold text-xs border border-stone-700 rounded px-1.5 py-0.5 cursor-pointer"
+                              >
+                                {Object.values(scenes).map((sc) => (
+                                  <option key={sc.id} value={sc.id}>
+                                    {sc.name}
+                                  </option>
+                                ))}
+                              </select>
+                            </div>
+                          )}
+
                           {!selectedMini.isPropOnly && selectedMini.format !== 'image' && (
                             <button
                               type="button"
@@ -2933,6 +3260,19 @@ export const TabletopHUD: React.FC<TabletopHUDProps> = ({
                           >
                             <Box className="w-3.5 h-3.5" />
                             <span>Trocar Modelo</span>
+                          </button>
+
+                          <button
+                            type="button"
+                            onClick={() => {
+                              onSaveActorToLibrary?.(selectedMini);
+                              showToast(`"${selectedMini.name}" salvo na sua Biblioteca!`);
+                            }}
+                            title="Salvar modelo 3D e ficha deste personagem/monstro na sua biblioteca pessoal"
+                            className="flex items-center gap-1 px-2.5 py-1 text-xs bg-amber-600/20 hover:bg-amber-600 hover:text-stone-950 border border-amber-500/50 rounded-lg text-amber-300 font-medium cursor-pointer transition-colors"
+                          >
+                            <Bookmark className="w-3.5 h-3.5" />
+                            <span>Salvar na Biblioteca</span>
                           </button>
 
                           <button
@@ -3297,6 +3637,100 @@ export const TabletopHUD: React.FC<TabletopHUDProps> = ({
                             )}
                           </div>
                         </div>
+
+                        {/* 📚 Minha Biblioteca de Monstros & Heróis Salvos */}
+                        <div className="pt-2 border-t border-stone-800 space-y-2">
+                          <div className="flex items-center justify-between">
+                            <div className="flex items-center gap-1.5">
+                              <Bookmark className="w-4 h-4 text-amber-400" />
+                              <span className="text-xs font-semibold text-amber-300">
+                                Minha Biblioteca de Monstros & Heróis Salvos ({savedActors.length})
+                              </span>
+                            </div>
+
+                            <div className="flex items-center gap-1.5">
+                              <input
+                                ref={actorImportInputRef}
+                                type="file"
+                                accept=".json"
+                                onChange={(e) => {
+                                  const f = e.target.files?.[0];
+                                  if (f) {
+                                    onImportActor?.(f);
+                                    e.target.value = '';
+                                  }
+                                }}
+                                className="hidden"
+                              />
+                              <button
+                                type="button"
+                                onClick={() => actorImportInputRef.current?.click()}
+                                className="flex items-center gap-1 px-2 py-1 text-xs bg-[#181d27] hover:bg-stone-700 border border-stone-700 rounded-lg text-stone-200 cursor-pointer"
+                              >
+                                <Upload className="w-3.5 h-3.5" />
+                                <span>Importar Ficha (.JSON)</span>
+                              </button>
+                            </div>
+                          </div>
+
+                          {savedActors.length === 0 ? (
+                            <div className="p-3 bg-[#0c0f15] border border-dashed border-stone-800 rounded-xl text-center text-xs text-stone-400">
+                              Nenhum monstro ou herói salvo ainda. Use o botão{' '}
+                              <strong className="text-amber-300">"⭐ Salvar na Biblioteca"</strong> na ficha ou na miniatura para reutilizá-los em qualquer mapa!
+                            </div>
+                          ) : (
+                            <div className="flex items-center gap-2 overflow-x-auto pb-1">
+                              {savedActors.map((actor) => (
+                                <div
+                                  key={actor.id}
+                                  className="flex items-center gap-2 px-2.5 py-1.5 bg-[#141923] border border-amber-500/30 rounded-xl text-xs text-stone-200 shrink-0 shadow"
+                                >
+                                  {actor.sheet.isMonster ? (
+                                    <Skull className="w-4 h-4 text-rose-400 shrink-0" />
+                                  ) : (
+                                    <Crown className="w-4 h-4 text-sky-400 shrink-0" />
+                                  )}
+                                  <div className="flex flex-col">
+                                    <span className="font-semibold text-stone-100">{actor.name}</span>
+                                    <span className="text-[10px] text-stone-400">
+                                      {actor.hp}/{actor.maxHp} PV · CA {actor.sheet.ac} · {actor.sheet.isMonster ? 'Monstro' : 'Herói'}
+                                    </span>
+                                  </div>
+                                  <div className="flex items-center gap-1 ml-2">
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        onSpawnActorFromLibrary?.(actor);
+                                        showToast(`"${actor.name}" colocado no tabuleiro!`);
+                                      }}
+                                      title="Colocar miniatura no centro do tabuleiro"
+                                      className="flex items-center gap-1 px-2 py-0.5 bg-amber-600 hover:bg-amber-500 text-stone-950 font-bold rounded text-[11px] cursor-pointer"
+                                    >
+                                      <Plus className="w-3 h-3" />
+                                      <span>Colocar</span>
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => onExportActor?.(actor)}
+                                      title="Exportar arquivo .JSON desta ficha"
+                                      className="p-1 hover:bg-stone-700 rounded text-stone-400 hover:text-stone-200 cursor-pointer"
+                                    >
+                                      <Download className="w-3 h-3" />
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => onDeleteSavedActor?.(actor.id)}
+                                      title="Excluir da biblioteca"
+                                      className="p-1 hover:bg-rose-950/60 rounded text-rose-400 cursor-pointer"
+                                    >
+                                      <Trash2 className="w-3 h-3" />
+                                    </button>
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                        </div>
                       </div>
                     </div>
                   );
@@ -3479,6 +3913,78 @@ export const TabletopHUD: React.FC<TabletopHUDProps> = ({
                           </button>
                         )}
                       </div>
+
+                      {/* 🚪 Configurações de Área de Transferência / Portal */}
+                      {activeTarget.kind === 'portal' && (
+                        <div className="flex flex-wrap items-center gap-3 p-2 bg-[#0d141e] border border-cyan-500/50 rounded-xl text-xs text-stone-200">
+                          <div className="flex items-center gap-1.5 font-semibold text-cyan-300">
+                            <DoorOpen className="w-4 h-4 text-cyan-400" />
+                            <span>Destino da Transferência:</span>
+                          </div>
+
+                          <select
+                            value={activeTarget.targetMap || 'blank'}
+                            onChange={(e) => {
+                              const val = e.target.value;
+                              const targetName = e.target.selectedOptions[0]?.text || val;
+                              patchActive({ targetMap: val, targetMapName: targetName });
+                            }}
+                            className="px-2.5 py-1 bg-[#16202e] border border-cyan-500/50 rounded-lg text-cyan-200 focus:outline-none"
+                          >
+                            {scenes && Object.keys(scenes).length > 0 && (
+                              <optgroup label="── Mapas Ativos na Mesa ──">
+                                {Object.values(scenes).map((sc) => (
+                                  <option key={sc.id} value={sc.id}>
+                                    📍 {sc.name}
+                                  </option>
+                                ))}
+                              </optgroup>
+                            )}
+                            <optgroup label="── Mapas Padrão ──">
+                              <option value="blank">Mapa Limpo (Padrão)</option>
+                              <option value="crypt">Cripta Nórdica</option>
+                              <option value="tavern">Taverna de Whiterun</option>
+                              <option value="arena">Pico dos Dragões</option>
+                            </optgroup>
+                            {savedScenarios.length > 0 && (
+                              <optgroup label="── Cenários Salvos ──">
+                                {savedScenarios.map((sc) => (
+                                  <option key={sc.id} value={sc.id}>
+                                    🗺️ {sc.name}
+                                  </option>
+                                ))}
+                              </optgroup>
+                            )}
+                          </select>
+
+                          <div className="flex items-center gap-1.5 bg-[#16202e] border border-stone-700 rounded-lg px-2 py-1">
+                            <span className="text-stone-400">Chegada X:</span>
+                            <input
+                              type="number"
+                              value={activeTarget.targetX ?? 0}
+                              onChange={(e) => patchActive({ targetX: parseInt(e.target.value) || 0 })}
+                              className="w-12 bg-transparent text-cyan-300 text-center focus:outline-none"
+                            />
+                            <span className="text-stone-400">Z:</span>
+                            <input
+                              type="number"
+                              value={activeTarget.targetZ ?? 0}
+                              onChange={(e) => patchActive({ targetZ: parseInt(e.target.value) || 0 })}
+                              className="w-12 bg-transparent text-cyan-300 text-center focus:outline-none"
+                            />
+                          </div>
+
+                          <label className="flex items-center gap-1.5 cursor-pointer text-stone-300 hover:text-white">
+                            <input
+                              type="checkbox"
+                              checked={activeTarget.autoTeleport ?? true}
+                              onChange={(e) => patchActive({ autoTeleport: e.target.checked })}
+                              className="rounded border-stone-700 accent-cyan-500"
+                            />
+                            <span>Teleporte imediato ao pisar (sem janela de confirmação)</span>
+                          </label>
+                        </div>
+                      )}
 
                       {annotationsList.length > 0 && (
                         <div className="flex items-center gap-1.5 overflow-x-auto pt-1 border-t border-stone-800/80">
@@ -3725,7 +4231,7 @@ export const TabletopHUD: React.FC<TabletopHUDProps> = ({
                           </span>
                         ) : (
                           <span className="text-stone-400">
-                            Conecte Google para backup na nuvem Firestore
+                            Backup na nuvem indisponivel
                           </span>
                         )}
                       </div>
@@ -3760,16 +4266,7 @@ export const TabletopHUD: React.FC<TabletopHUDProps> = ({
                               <span>Sair</span>
                             </button>
                           </>
-                        ) : (
-                          <button
-                            type="button"
-                            onClick={onGoogleSignIn}
-                            className="flex items-center gap-1.5 px-3 py-1 text-xs font-medium bg-sky-600/20 hover:bg-sky-600/35 border border-sky-500/50 text-sky-200 rounded-lg cursor-pointer"
-                          >
-                            <Cloud className="w-3.5 h-3.5" />
-                            <span>Conectar Google (Firestore)</span>
-                          </button>
-                        )}
+                        ) : null}
                       </div>
                     </div>
                   </div>
@@ -3884,17 +4381,7 @@ export const TabletopHUD: React.FC<TabletopHUDProps> = ({
                         <Cloud className="w-3.5 h-3.5" />
                         <span>{cloudSyncing ? 'Salvando...' : 'Nuvem'}</span>
                       </button>
-                    ) : (
-                      <button
-                        type="button"
-                        onClick={onGoogleSignIn}
-                        title="Conectar Google para salvar sua ficha no banco"
-                        className="flex items-center gap-1 px-2 py-1 text-xs bg-[#181d27] hover:bg-[#222938] border border-stone-700 text-sky-300 rounded-lg cursor-pointer"
-                      >
-                        <Cloud className="w-3.5 h-3.5" />
-                        <span>Conectar Google</span>
-                      </button>
-                    )}
+                    ) : null}
 
                     {toolMode === 'measure' ? (
                       <span className="text-xs text-cyan-300">
@@ -4236,5 +4723,354 @@ export const TabletopHUD: React.FC<TabletopHUDProps> = ({
         )}
       </div>
     </div>
+
+      {/* 🌀 Modal de Confirmação de Área de Transferência / Portal */}
+      {activePortalPrompt && (
+        <div className="fixed inset-0 z-[120] flex items-center justify-center bg-black/75 backdrop-blur-sm p-4">
+          <div className="w-full max-w-md p-6 bg-[#10141d] border border-cyan-500/60 rounded-2xl shadow-2xl text-center space-y-4 animate-in fade-in zoom-in-95 duration-200">
+            <div className="w-14 h-14 mx-auto rounded-full bg-cyan-950/80 border border-cyan-400 flex items-center justify-center text-cyan-300 shadow-[0_0_20px_rgba(6,182,212,0.4)]">
+              <DoorOpen className="w-7 h-7 animate-pulse" />
+            </div>
+            <div>
+              <h3 className="text-lg font-bold text-cyan-200">Área de Transferência / Portal</h3>
+              <p className="text-sm text-stone-300 mt-1">
+                <span className="font-semibold text-white">{activePortalPrompt.miniName}</span> pisou no portal{' '}
+                <span className="font-semibold text-cyan-300">"{activePortalPrompt.portal.label || 'Portal'}"</span>!
+              </p>
+              <div className="mt-3 p-3 bg-[#182030] rounded-xl border border-cyan-900/60 text-xs text-stone-300">
+                <span>Destino: </span>
+                <span className="font-semibold text-cyan-300">
+                  {activePortalPrompt.portal.targetMapName || activePortalPrompt.portal.targetMap || 'Cenário de Destino'}
+                </span>
+                <span className="text-stone-400 ml-2">
+                  (Chegada em X: {activePortalPrompt.portal.targetX ?? 0}, Z: {activePortalPrompt.portal.targetZ ?? 0})
+                </span>
+              </div>
+            </div>
+            <div className="flex items-center justify-center gap-3 pt-2">
+              <button
+                type="button"
+                onClick={onCancelPortalTeleport}
+                className="px-4 py-2 bg-stone-800 hover:bg-stone-700 text-stone-300 text-xs font-semibold rounded-xl cursor-pointer transition-colors"
+              >
+                Ficar Aqui
+              </button>
+              <button
+                type="button"
+                onClick={onConfirmPortalTeleport}
+                className="px-5 py-2 bg-cyan-600 hover:bg-cyan-500 text-stone-950 text-xs font-bold rounded-xl shadow-lg shadow-cyan-600/30 cursor-pointer transition-colors flex items-center gap-1.5"
+              >
+                <Sparkles className="w-4 h-4" />
+                <span>Entrar no Portal</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 💾 Modal Salvar Cenário Atual */}
+      {showSaveScenarioModal && (
+        <div className="fixed inset-0 z-[120] flex items-center justify-center bg-black/75 backdrop-blur-sm p-4">
+          <div className="w-full max-w-md p-6 bg-[#10141d] border border-emerald-500/50 rounded-2xl shadow-2xl space-y-4">
+            <div className="flex items-center justify-between border-b border-stone-800 pb-3">
+              <div className="flex items-center gap-2 text-emerald-400 font-bold text-base">
+                <Save className="w-5 h-5" />
+                <span>Salvar Cenário Atual</span>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowSaveScenarioModal(false)}
+                className="p-1 text-stone-400 hover:text-stone-200 cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            <div className="space-y-3 text-xs">
+              <div>
+                <label className="block text-stone-300 mb-1 font-medium">Nome do Cenário:</label>
+                <input
+                  type="text"
+                  value={newScenarioName}
+                  onChange={(e) => setNewScenarioName(e.target.value)}
+                  placeholder="Ex: Tumba do Faraó Negro, Andar 2"
+                  className="w-full px-3 py-2 bg-[#181d27] border border-stone-700 rounded-lg text-stone-100 placeholder:text-stone-500 focus:outline-none focus:border-emerald-400"
+                />
+              </div>
+              <div>
+                <label className="block text-stone-300 mb-1 font-medium">Descrição (opcional):</label>
+                <textarea
+                  value={newScenarioDesc}
+                  onChange={(e) => setNewScenarioDesc(e.target.value)}
+                  placeholder="Ex: Sala com armadilhas de fogo e portais de saída..."
+                  rows={2}
+                  className="w-full px-3 py-2 bg-[#181d27] border border-stone-700 rounded-lg text-stone-100 placeholder:text-stone-500 focus:outline-none focus:border-emerald-400 resize-none"
+                />
+              </div>
+              <p className="text-[11px] text-stone-400">
+                Serão salvos: relevo de elevação, tipos de piso, props 3D, música ambiente e marcadores táticos. Os heróis dos jogadores permanecerão protegidos na transição!
+              </p>
+            </div>
+            <div className="flex items-center justify-end gap-2.5 pt-2 border-t border-stone-800">
+              <button
+                type="button"
+                onClick={() => setShowSaveScenarioModal(false)}
+                className="px-3.5 py-1.5 bg-stone-800 hover:bg-stone-700 text-stone-300 text-xs font-semibold rounded-lg cursor-pointer"
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  if (!newScenarioName.trim()) return;
+                  onSaveCurrentScenario?.(newScenarioName.trim(), newScenarioDesc.trim());
+                  setShowSaveScenarioModal(false);
+                  showToast(`Cenário "${newScenarioName}" salvo com sucesso!`);
+                }}
+                disabled={!newScenarioName.trim()}
+                className="px-4 py-1.5 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-stone-950 text-xs font-bold rounded-lg shadow cursor-pointer transition-colors flex items-center gap-1.5"
+              >
+                <Save className="w-3.5 h-3.5" />
+                <span>Salvar Agora</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 📁 Modal Gerenciador de Cenários */}
+      {showScenarioManagerModal && (
+        <div className="fixed inset-0 z-[120] flex items-center justify-center bg-black/75 backdrop-blur-sm p-4">
+          <div className="w-full max-w-2xl p-6 bg-[#10141d] border border-stone-700/80 rounded-2xl shadow-2xl space-y-4 max-h-[85vh] flex flex-col">
+            <div className="flex items-center justify-between border-b border-stone-800 pb-3 shrink-0">
+              <div className="flex items-center gap-2 text-amber-400 font-bold text-base">
+                <FolderPlus className="w-5 h-5" />
+                <span>Gerenciador de Cenários & Mapas ({savedScenarios.length})</span>
+              </div>
+              <div className="flex items-center gap-2">
+                <input
+                  ref={scenarioImportInputRef}
+                  type="file"
+                  accept=".json"
+                  onChange={(e) => {
+                    const f = e.target.files?.[0];
+                    if (f) {
+                      onImportScenario?.(f);
+                      e.target.value = '';
+                      showToast('Cenário importado com sucesso!');
+                    }
+                  }}
+                  className="hidden"
+                />
+                <button
+                  type="button"
+                  onClick={() => scenarioImportInputRef.current?.click()}
+                  className="flex items-center gap-1.5 px-3 py-1.5 bg-[#181d27] hover:bg-stone-700 border border-stone-700 rounded-lg text-xs text-stone-200 cursor-pointer"
+                >
+                  <Upload className="w-3.5 h-3.5" />
+                  <span>Importar Cenário (.JSON)</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setShowScenarioManagerModal(false)}
+                  className="p-1 text-stone-400 hover:text-stone-200 cursor-pointer"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+            </div>
+
+            <div className="flex-1 overflow-y-auto space-y-2.5 pr-1">
+              {savedScenarios.length === 0 ? (
+                <div className="p-8 text-center bg-[#0c0f15] border border-dashed border-stone-800 rounded-xl space-y-2">
+                  <p className="text-sm text-stone-400">Você ainda não tem cenários salvos no navegador.</p>
+                  <p className="text-xs text-stone-500">
+                    Crie seu mapa (esculpindo relevo, adicionando pinheiros, muros e tochas) e clique em "Salvar Cenário" na aba Terreno.
+                  </p>
+                </div>
+              ) : (
+                savedScenarios.map((sc) => (
+                  <div
+                    key={sc.id}
+                    className="p-3.5 bg-[#141923] border border-stone-800 hover:border-amber-500/40 rounded-xl flex items-center justify-between gap-4 transition-colors"
+                  >
+                    <div className="space-y-1">
+                      <div className="flex items-center gap-2">
+                        <span className="font-semibold text-stone-100 text-sm">{sc.name}</span>
+                        <span className="text-[10px] px-2 py-0.5 bg-stone-800 rounded text-stone-400">
+                          {Object.keys(sc.tiles || {}).length} blocos · {Object.keys(sc.miniatures || {}).length} props 3D
+                        </span>
+                      </div>
+                      {sc.description && (
+                        <p className="text-xs text-stone-400 line-clamp-1">{sc.description}</p>
+                      )}
+                      <p className="text-[10px] text-stone-500">
+                        Salvo em {new Date(sc.createdAt).toLocaleString('pt-BR')}
+                      </p>
+                    </div>
+
+                    <div className="flex items-center gap-2 shrink-0">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          onLoadScenario?.(sc.id);
+                          setShowScenarioManagerModal(false);
+                          showToast(`Cenário "${sc.name}" carregado na mesa!`);
+                        }}
+                        className="px-3 py-1.5 bg-amber-600 hover:bg-amber-500 text-stone-950 font-bold text-xs rounded-lg cursor-pointer transition-colors shadow"
+                      >
+                        Carregar na Mesa
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => onExportScenario?.(sc)}
+                        title="Baixar arquivo .JSON deste cenário"
+                        className="p-1.5 bg-[#181d27] hover:bg-stone-700 border border-stone-700 rounded-lg text-stone-300 hover:text-white cursor-pointer"
+                      >
+                        <Download className="w-4 h-4" />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (confirm(`Deseja realmente excluir o cenário "${sc.name}"?`)) {
+                            onDeleteScenario?.(sc.id);
+                            showToast(`Cenário "${sc.name}" excluído.`);
+                          }
+                        }}
+                        title="Excluir cenário"
+                        className="p-1.5 bg-rose-950/40 hover:bg-rose-900 border border-rose-500/30 rounded-lg text-rose-400 cursor-pointer"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 🗺️ Modal para Criar Novo Mapa na Mesa */}
+      {showAddMapModal && (
+        <div className="fixed inset-0 z-[120] flex items-center justify-center bg-black/75 backdrop-blur-sm p-4">
+          <div className="w-full max-w-md p-6 bg-[#10141d] border border-amber-500/60 rounded-2xl shadow-2xl space-y-4 animate-in fade-in zoom-in-95 duration-200">
+            <div className="flex items-center justify-between pb-2 border-b border-stone-800">
+              <div className="flex items-center gap-2">
+                <Map className="w-5 h-5 text-amber-400" />
+                <h3 className="text-base font-bold text-amber-200">Adicionar Novo Mapa à Mesa</h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowAddMapModal(false)}
+                className="text-stone-400 hover:text-stone-200 p-1 rounded-lg cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="space-y-3 text-xs text-stone-200">
+              <div>
+                <label className="block text-stone-400 mb-1 font-medium">Nome do Mapa / Cenário:</label>
+                <input
+                  type="text"
+                  placeholder="Ex: Cripta Subterrânea, Taverna do Pônei..."
+                  value={newMapName}
+                  onChange={(e) => setNewMapName(e.target.value)}
+                  className="w-full px-3 py-2 bg-[#161c28] border border-stone-700 rounded-xl text-stone-100 placeholder-stone-500 focus:outline-none focus:border-amber-400"
+                />
+              </div>
+
+              <div>
+                <label className="block text-stone-400 mb-1 font-medium">Modelo / Origem do Mapa:</label>
+                <select
+                  value={newMapTemplate}
+                  onChange={(e) => setNewMapTemplate(e.target.value)}
+                  className="w-full px-3 py-2 bg-[#161c28] border border-stone-700 rounded-xl text-stone-100 focus:outline-none focus:border-amber-400"
+                >
+                  <optgroup label="── Modelos Prontos ──">
+                    <option value="tavern">Taverna de Whiterun</option>
+                    <option value="crypt">Cripta Nórdica</option>
+                    <option value="arena">Pico dos Dragões</option>
+                    <option value="dungeon-gate">Portão da Masmorra</option>
+                    <option value="blank">Tabuleiro Limpo (Vazio)</option>
+                  </optgroup>
+                  {savedScenarios.length > 0 && (
+                    <optgroup label="── Seus Cenários Salvos na Biblioteca ──">
+                      {savedScenarios.map((sc) => (
+                        <option key={sc.id} value={`saved:${sc.id}`}>
+                          🗺️ {sc.name}
+                        </option>
+                      ))}
+                    </optgroup>
+                  )}
+                </select>
+              </div>
+
+              <p className="text-[11px] text-stone-400">
+                O novo mapa será adicionado à lista da mesa. Você e os jogadores poderão alternar entre mapas ou transferir personagens entre eles.
+              </p>
+            </div>
+
+            <div className="flex items-center justify-end gap-2 pt-3 border-t border-stone-800">
+              <button
+                type="button"
+                onClick={() => setShowAddMapModal(false)}
+                className="px-3 py-1.5 text-xs text-stone-400 hover:text-stone-200 cursor-pointer"
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  const title = newMapName.trim() || 'Novo Mapa';
+                  const sceneId = `scene-${Date.now()}`;
+                  let tiles = {};
+                  let annotations = {};
+                  let presetName: MapPresetId = 'tavern';
+
+                  if (newMapTemplate.startsWith('saved:')) {
+                    const savedId = newMapTemplate.replace('saved:', '');
+                    const sc = savedScenarios.find((s) => s.id === savedId);
+                    if (sc) {
+                      tiles = JSON.parse(JSON.stringify(sc.tiles || {}));
+                      annotations = JSON.parse(JSON.stringify(sc.annotations || {}));
+                    }
+                  } else {
+                    presetName = (newMapTemplate || 'tavern') as MapPresetId;
+                    const built = buildMapPreset(presetName);
+                    tiles = built.tiles;
+                    annotations = built.annotations;
+                  }
+
+                  const newScene: RoomScene = {
+                    id: sceneId,
+                    name: title,
+                    presetName,
+                    cols: 20,
+                    rows: 20,
+                    tiles,
+                    annotations,
+                  };
+
+                  onCreateScene?.(newScene);
+                  setShowAddMapModal(false);
+                  showToast(`Mapa "${title}" criado com sucesso!`);
+                }}
+                className="px-4 py-2 text-xs font-bold bg-amber-500 hover:bg-amber-400 text-stone-950 rounded-xl shadow cursor-pointer transition-colors"
+              >
+                Criar e Ir para o Mapa
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 🍞 Toast Informativo Flutuante */}
+      {libraryToast && (
+        <div className="fixed bottom-20 left-1/2 -translate-x-1/2 z-[130] px-4 py-2 bg-emerald-600 text-stone-950 font-bold text-xs rounded-full shadow-2xl animate-in fade-in slide-in-from-bottom-2 duration-200">
+          {libraryToast}
+        </div>
+      )}
+    </>
   );
 };

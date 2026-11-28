@@ -58,6 +58,11 @@ export interface AnnotationBrush {
   color: string;
   label: string;
   gmOnly: boolean;
+  targetMap?: string;
+  targetMapName?: string;
+  targetX?: number;
+  targetZ?: number;
+  autoTeleport?: boolean;
 }
 
 export interface RulerLineCoords {
@@ -336,6 +341,22 @@ function detectSoftwareGl(): boolean {
   }
 }
 
+function createBoardGridGeometry(cols: number, rows: number): THREE.BufferGeometry {
+  const vertices: number[] = [];
+  for (let x = 0; x <= cols; x++) {
+    const gridX = x - cols / 2;
+    vertices.push(gridX, 0, -rows / 2, gridX, 0, rows / 2);
+  }
+  for (let z = 0; z <= rows; z++) {
+    const gridZ = z - rows / 2;
+    vertices.push(-cols / 2, 0, gridZ, cols / 2, 0, gridZ);
+  }
+
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute('position', new THREE.Float32BufferAttribute(vertices, 3));
+  return geometry;
+}
+
 export const TabletopViewport: React.FC<TabletopViewportProps> = ({
   roomState,
   role,
@@ -435,6 +456,7 @@ export const TabletopViewport: React.FC<TabletopViewportProps> = ({
     syncRemoteRulers: (rulers: Record<string, RulerMeasurement> | undefined) => void;
     syncDiceRolls: (rolls: DiceRollEvent[], state: RoomState) => void;
     applyCameraPreset: (preset: CameraPreset) => void;
+    syncBoardBounds: (cols: number, rows: number) => void;
     updateSelectionVisuals: (selectedId: string | null) => void;
     updateLayerVisuals: (layer: 'all' | 'characters' | 'props') => void;
     focusOnMini: (miniId: string) => void;
@@ -457,6 +479,7 @@ export const TabletopViewport: React.FC<TabletopViewportProps> = ({
     renderer.shadowMap.enabled = !isSoftwareGl;
     renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     renderer.setSize(container.clientWidth || window.innerWidth, container.clientHeight || window.innerHeight);
+    renderer.domElement.style.touchAction = 'none';
 
     container.appendChild(renderer.domElement);
 
@@ -480,17 +503,21 @@ export const TabletopViewport: React.FC<TabletopViewportProps> = ({
     scene.environment = envTex;
     pmremGenerator.dispose();
 
+    const initialCols = propsRef.current.roomState?.cols || 16;
+    const initialRows = propsRef.current.roomState?.rows || 16;
+    const initialCenterX = (initialCols - 1) / 2;
+    const initialCenterZ = (initialRows - 1) / 2;
     const aspect = (container.clientWidth || window.innerWidth) / (container.clientHeight || window.innerHeight);
     const camera = new THREE.PerspectiveCamera(42, aspect, 0.1, 160);
-    camera.position.set(17, 14.5, 19);
+    camera.position.set(initialCenterX + 9.5, 14.5, initialCenterZ + 11.5);
 
     const controls = new OrbitControls(camera, renderer.domElement);
     controls.enableDamping = !isSoftwareGl;
     controls.dampingFactor = 0.07;
     controls.minDistance = 5;
-    controls.maxDistance = 36;
+    controls.maxDistance = Math.max(36, Math.max(initialCols, initialRows) * 1.8);
     controls.maxPolarAngle = Math.PI / 2.18;
-    controls.target.set(7.5, 0.5, 7.5);
+    controls.target.set(initialCenterX, 0.5, initialCenterZ);
     controls.update();
 
     // Camera transition state (cancelled immediately on manual OrbitControls start)
@@ -508,6 +535,8 @@ export const TabletopViewport: React.FC<TabletopViewportProps> = ({
 
     const keyLight = new THREE.DirectionalLight(0xfff0d6, 1.85);
     keyLight.position.set(16, 22, 14);
+    keyLight.position.x += initialCenterX - 7.5;
+    keyLight.position.z += initialCenterZ - 7.5;
     keyLight.castShadow = !isSoftwareGl;
     keyLight.shadow.mapSize.width = 2048;
     keyLight.shadow.mapSize.height = 2048;
@@ -519,7 +548,7 @@ export const TabletopViewport: React.FC<TabletopViewportProps> = ({
     keyLight.shadow.camera.bottom = -12;
     keyLight.shadow.bias = -0.0005;
     keyLight.shadow.normalBias = 0.02;
-    keyLight.target.position.set(7.5, 0, 7.5);
+    keyLight.target.position.set(initialCenterX, 0, initialCenterZ);
     scene.add(keyLight.target);
     scene.add(keyLight);
 
@@ -532,7 +561,7 @@ export const TabletopViewport: React.FC<TabletopViewportProps> = ({
       renderer.capabilities.getMaxAnisotropy()
     );
 
-    // Physical Wooden Tabletop Frame around the 16x16 slab
+    // Physical tabletop frame
     const tableGroup = new THREE.Group();
     const frameMat = new THREE.MeshStandardMaterial({
       map: textures.tableWoodMap,
@@ -544,38 +573,54 @@ export const TabletopViewport: React.FC<TabletopViewportProps> = ({
       roughness: 0.3,
       metalness: 0.88,
     });
-    const innerBed = new THREE.Mesh(
-      new THREE.BoxGeometry(16.2, 0.3, 16.2),
-      new THREE.MeshStandardMaterial({ color: 0x13171e, roughness: 0.9, metalness: 0.05 })
-    );
-    innerBed.position.set(7.5, -0.16, 7.5);
-    innerBed.receiveShadow = true;
-    tableGroup.add(innerBed);
-
-    // 4 Beveled Wooden Borders
-    const borderN = new THREE.Mesh(new THREE.BoxGeometry(17.4, 0.42, 0.6), frameMat);
-    borderN.position.set(7.5, -0.1, -0.8);
-    const borderS = borderN.clone();
-    borderS.position.set(7.5, -0.1, 15.8);
-    const borderW = new THREE.Mesh(new THREE.BoxGeometry(0.6, 0.42, 16.2), frameMat);
-    borderW.position.set(-0.8, -0.1, 7.5);
-    const borderE = borderW.clone();
-    borderE.position.set(15.8, -0.1, 7.5);
-    tableGroup.add(borderN, borderS, borderW, borderE);
-
-    // 4 Brass Corner Brackets + Inner Dark Slate Trim
-    const cornerGeo = new THREE.BoxGeometry(0.76, 0.46, 0.76);
-    [
-      [-0.8, -0.8],
-      [15.8, -0.8],
-      [-0.8, 15.8],
-      [15.8, 15.8],
-    ].forEach(([cx, cz]) => {
-      const c = new THREE.Mesh(cornerGeo, brassFrameMat);
-      c.position.set(cx, -0.09, cz);
-      tableGroup.add(c);
-    });
     scene.add(tableGroup);
+
+    const innerBedMat = new THREE.MeshStandardMaterial({
+      color: 0x13171e,
+      roughness: 0.9,
+      metalness: 0.05,
+    });
+    const syncTableFrame = (cols: number, rows: number) => {
+      const oldGeometries = new Set<THREE.BufferGeometry>();
+      tableGroup.traverse((object) => {
+        if (object instanceof THREE.Mesh) oldGeometries.add(object.geometry);
+      });
+      tableGroup.clear();
+      oldGeometries.forEach((geometry) => geometry.dispose());
+
+      const centerX = (cols - 1) / 2;
+      const centerZ = (rows - 1) / 2;
+      const innerBed = new THREE.Mesh(
+        new THREE.BoxGeometry(cols + 0.2, 0.3, rows + 0.2),
+        innerBedMat
+      );
+      innerBed.position.set(centerX, -0.16, centerZ);
+      innerBed.receiveShadow = true;
+      tableGroup.add(innerBed);
+
+      const borderN = new THREE.Mesh(new THREE.BoxGeometry(cols + 1.4, 0.42, 0.6), frameMat);
+      borderN.position.set(centerX, -0.1, -0.8);
+      const borderS = borderN.clone();
+      borderS.position.set(centerX, -0.1, rows - 0.2);
+      const borderW = new THREE.Mesh(new THREE.BoxGeometry(0.6, 0.42, rows + 0.2), frameMat);
+      borderW.position.set(-0.8, -0.1, centerZ);
+      const borderE = borderW.clone();
+      borderE.position.set(cols - 0.2, -0.1, centerZ);
+      tableGroup.add(borderN, borderS, borderW, borderE);
+
+      const cornerGeo = new THREE.BoxGeometry(0.76, 0.46, 0.76);
+      [
+        [-0.8, -0.8],
+        [cols - 0.2, -0.8],
+        [-0.8, rows - 0.2],
+        [cols - 0.2, rows - 0.2],
+      ].forEach(([x, z]) => {
+        const corner = new THREE.Mesh(cornerGeo, brassFrameMat);
+        corner.position.set(x, -0.09, z);
+        tableGroup.add(corner);
+      });
+    };
+    syncTableFrame(initialCols, initialRows);
 
     // Subtle Atmospheric Floating Ember / Dust Motes (90 lightweight particles)
     const moteCount = 90;
@@ -601,11 +646,12 @@ export const TabletopViewport: React.FC<TabletopViewportProps> = ({
     const motePoints = new THREE.Points(moteGeo, moteMat);
     scene.add(motePoints);
 
-    // Subtle Grid Lines overlay (polygonOffset to prevent Z-fighting)
-    const gridHelper = new THREE.GridHelper(16, 16, 0x3b4252, 0x262c38);
-    gridHelper.position.set(7.5, 0.015, 7.5);
-    (gridHelper.material as THREE.Material).transparent = true;
-    (gridHelper.material as THREE.Material).opacity = 0.28;
+    // Subtle grid lines overlay
+    const gridHelper = new THREE.LineSegments(
+      createBoardGridGeometry(initialCols, initialRows),
+      new THREE.LineBasicMaterial({ color: 0x303846, transparent: true, opacity: 0.28 })
+    );
+    gridHelper.position.set((initialCols - 1) / 2, 0.015, (initialRows - 1) / 2);
     scene.add(gridHelper);
 
     // Dynamic Scene Containers
@@ -613,12 +659,39 @@ export const TabletopViewport: React.FC<TabletopViewportProps> = ({
     const minisRoot = new THREE.Group();
     const annotationsRoot = new THREE.Group();
     const raycastFloorPlane = new THREE.Mesh(
-      new THREE.PlaneGeometry(16, 16),
+      new THREE.PlaneGeometry(initialCols, initialRows),
       new THREE.MeshBasicMaterial({ visible: false })
     );
     raycastFloorPlane.rotation.x = -Math.PI / 2;
-    raycastFloorPlane.position.set(7.5, 0, 7.5);
+    raycastFloorPlane.position.set((initialCols - 1) / 2, 0, (initialRows - 1) / 2);
     scene.add(tilesRoot, minisRoot, annotationsRoot, raycastFloorPlane);
+
+    let boardCols = initialCols;
+    let boardRows = initialRows;
+    const syncBoardBounds = (cols: number, rows: number) => {
+      const safeCols = Math.max(1, Math.floor(cols));
+      const safeRows = Math.max(1, Math.floor(rows));
+      const centerShiftX = (safeCols - boardCols) / 2;
+      const centerShiftZ = (safeRows - boardRows) / 2;
+      camera.position.x += centerShiftX;
+      camera.position.z += centerShiftZ;
+      controls.target.x += centerShiftX;
+      controls.target.z += centerShiftZ;
+      keyLight.position.x += centerShiftX;
+      keyLight.position.z += centerShiftZ;
+      keyLight.target.position.x += centerShiftX;
+      keyLight.target.position.z += centerShiftZ;
+      boardCols = safeCols;
+      boardRows = safeRows;
+      controls.maxDistance = Math.max(36, Math.max(safeCols, safeRows) * 1.8);
+      syncTableFrame(safeCols, safeRows);
+      gridHelper.geometry.dispose();
+      gridHelper.geometry = createBoardGridGeometry(safeCols, safeRows);
+      gridHelper.position.set((safeCols - 1) / 2, 0.015, (safeRows - 1) / 2);
+      raycastFloorPlane.geometry.dispose();
+      raycastFloorPlane.geometry = new THREE.PlaneGeometry(safeCols, safeRows);
+      raycastFloorPlane.position.set((safeCols - 1) / 2, 0, (safeRows - 1) / 2);
+    };
 
     // Cursor de Seleção do Grid Estilo Yu-Gi-Oh! Forbidden Memories
     const hoverCursor = createYugiohCornerFrame(1.0, 0xfbbf24);
@@ -1420,6 +1493,7 @@ export const TabletopViewport: React.FC<TabletopViewportProps> = ({
       syncRemoteRulers,
       syncDiceRolls,
       applyCameraPreset,
+      syncBoardBounds,
       updateSelectionVisuals,
       updateLayerVisuals,
       focusOnMini,
@@ -2112,11 +2186,14 @@ export const TabletopViewport: React.FC<TabletopViewportProps> = ({
       if (!container) return;
       const w = container.clientWidth || window.innerWidth;
       const h = container.clientHeight || window.innerHeight;
+      if (w <= 0 || h <= 0) return;
       camera.aspect = w / h;
       camera.updateProjectionMatrix();
       renderer.setSize(w, h);
     };
     window.addEventListener('resize', handleResize);
+    const resizeObserver = new ResizeObserver(handleResize);
+    resizeObserver.observe(container);
 
     // 60fps Animation & Damped Simulation Loop
     let frameId = 0;
@@ -2409,6 +2486,7 @@ export const TabletopViewport: React.FC<TabletopViewportProps> = ({
       disposed = true;
       cancelAnimationFrame(frameId);
       clearTimeout(frameId);
+      resizeObserver.disconnect();
       window.removeEventListener('resize', handleResize);
       window.removeEventListener('pointerup', handlePointerUp);
       window.removeEventListener('keydown', handleKeyDown);
@@ -2444,7 +2522,19 @@ export const TabletopViewport: React.FC<TabletopViewportProps> = ({
       turnInnerHaloMat.dispose();
       gemGeo.dispose();
       gemMat.dispose();
+      const tableGeometries = new Set<THREE.BufferGeometry>();
+      tableGroup.traverse((object) => {
+        if (object instanceof THREE.Mesh) tableGeometries.add(object.geometry);
+      });
+      tableGeometries.forEach((geometry) => geometry.dispose());
+      frameMat.dispose();
+      brassFrameMat.dispose();
+      innerBedMat.dispose();
       renderer.dispose();
+      gridHelper.geometry.dispose();
+      (gridHelper.material as THREE.Material).dispose();
+      raycastFloorPlane.geometry.dispose();
+      (raycastFloorPlane.material as THREE.Material).dispose();
       if (renderer.domElement.parentNode === container) {
         container.removeChild(renderer.domElement);
       }
@@ -2467,16 +2557,15 @@ export const TabletopViewport: React.FC<TabletopViewportProps> = ({
   }, [gmLayer]);
 
   useEffect(() => {
+    sceneSyncRef.current?.syncBoardBounds(roomState?.cols || 16, roomState?.rows || 16);
+  }, [roomState?.cols, roomState?.rows]);
+
+  useEffect(() => {
     sceneSyncRef.current?.syncLocalRuler(localRuler, measureRule, userColor || '#22d3ee');
   }, [localRuler, measureRule, userColor, roomState?.tiles]);
 
-  const lastFocusedMiniRef = useRef<string | null>(null);
   useEffect(() => {
     sceneSyncRef.current?.updateSelectionVisuals(selectedMiniId);
-    if (selectedMiniId && selectedMiniId !== lastFocusedMiniRef.current) {
-      lastFocusedMiniRef.current = selectedMiniId;
-      sceneSyncRef.current?.focusOnMini(selectedMiniId);
-    }
   }, [selectedMiniId]);
 
   // Foco suave de câmera quando o turno de iniciativa avança

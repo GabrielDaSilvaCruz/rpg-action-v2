@@ -219,9 +219,78 @@ export function createAnnotationVisual(
 
     group.add(beam, leftB, rightB);
     labelY = 0.72;
+  } else if (ann.kind === 'portal') {
+    // Portal / Área de Transferência 3D
+    const portalRadius = Math.max(0.48, (ann.radius || 1) * 0.48) * TILE_SIZE;
+
+    // Anel externo com brilho e runas
+    const ringGeo = new THREE.RingGeometry(portalRadius * 0.76, portalRadius, 32);
+    ringGeo.rotateX(-Math.PI / 2);
+    const portalEdgeMat = new THREE.MeshBasicMaterial({
+      color: new THREE.Color(ann.color || '#38bdf8'),
+      transparent: true,
+      opacity: isSelected ? 0.95 : 0.82,
+      side: THREE.DoubleSide,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
+    });
+    ringMesh = new THREE.Mesh(ringGeo, portalEdgeMat);
+    ringMesh.position.y = 0.038;
+    group.add(ringMesh);
+
+    // Disco interno do vórtice do portal
+    const vortexGeo = new THREE.CircleGeometry(portalRadius * 0.75, 32);
+    vortexGeo.rotateX(-Math.PI / 2);
+    const vortexMat = new THREE.MeshBasicMaterial({
+      color: new THREE.Color(ann.color || '#0284c7'),
+      transparent: true,
+      opacity: isSelected ? 0.6 : 0.45,
+      side: THREE.DoubleSide,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
+    });
+    const vortex = new THREE.Mesh(vortexGeo, vortexMat);
+    vortex.position.y = 0.035;
+    group.add(vortex);
+
+    // Arco vertical translúcido simbolizando o portal / porta
+    const arcRadius = portalRadius * 0.7;
+    const arcGeo = new THREE.TorusGeometry(arcRadius, 0.035, 12, 24, Math.PI);
+    const arcMat = new THREE.MeshStandardMaterial({
+      color: new THREE.Color(ann.color || '#38bdf8'),
+      emissive: new THREE.Color(ann.color || '#38bdf8'),
+      emissiveIntensity: 0.8,
+      metalness: 0.6,
+      roughness: 0.3,
+    });
+    const arcMesh = new THREE.Mesh(arcGeo, arcMat);
+    arcMesh.position.y = 0.04;
+    group.add(arcMesh);
+
+    // Gema / Cristal arcano flutuante no topo do portal
+    crystalMesh = new THREE.Mesh(
+      new THREE.OctahedronGeometry(0.18, 0),
+      new THREE.MeshStandardMaterial({
+        color: new THREE.Color(ann.color || '#38bdf8'),
+        emissive: new THREE.Color(ann.color || '#38bdf8'),
+        emissiveIntensity: 1.3,
+        roughness: 0.1,
+        metalness: 0.4,
+      })
+    );
+    crystalMesh.position.y = arcRadius + 0.15;
+    group.add(crystalMesh);
+
+    labelY = arcRadius + 0.55;
   }
 
-  const billboard = createTextBillboard(ann.label, ann.color, ann.gmOnly, maxAnisotropy);
+  const portalLabel =
+    ann.kind === 'portal'
+      ? `🚪 ${ann.label || 'Área de Transferência'}${
+          ann.targetMapName ? ` ➔ ${ann.targetMapName}` : ''
+        }`
+      : ann.label;
+  const billboard = createTextBillboard(portalLabel, ann.color, ann.gmOnly, maxAnisotropy);
   if (billboard) {
     billboard.position.y = labelY;
     group.add(billboard);

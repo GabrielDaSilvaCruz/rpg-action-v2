@@ -8,7 +8,6 @@ interface EntryLobbyProps {
   initialRoomId: string;
   firebaseUser: User | null;
   savedRooms: { roomId: string; presetName: string; gmName: string }[];
-  onGoogleSignIn: () => void;
   onGoogleSignOut: () => void;
   onRoleChange?: (role: Role) => void;
   onEnter: (config: {
@@ -26,7 +25,6 @@ export const EntryLobby: React.FC<EntryLobbyProps> = ({
   initialRoomId,
   firebaseUser,
   savedRooms,
-  onGoogleSignIn,
   onGoogleSignOut,
   onRoleChange,
   onEnter,
@@ -87,36 +85,20 @@ export const EntryLobby: React.FC<EntryLobbyProps> = ({
       />
 
       {/* Top Brand Lockup */}
-      <div className="relative z-10 flex items-center gap-3 pointer-events-auto max-w-fit">
-        <svg
-          width="36"
-          height="36"
-          viewBox="0 0 36 36"
-          fill="none"
-          aria-hidden="true"
-          className="shrink-0"
-        >
-          <polygon
-            points="18,2 32,10 32,26 18,34 4,26 4,10"
-            stroke="#f59e0b"
-            strokeWidth="1.75"
-            fill="#141923"
+      <div className="relative z-10 flex items-center gap-3.5 pointer-events-auto max-w-fit">
+        <div className="relative w-12 h-12 md:w-14 md:h-14 rounded-full p-0.5 bg-gradient-to-br from-amber-400 via-amber-600 to-amber-900 shadow-[0_0_20px_rgba(245,158,11,0.35)] shrink-0">
+          <img
+            src="/logo.png"
+            alt="RPG Ação Logo"
+            className="w-full h-full object-cover rounded-full"
           />
-          <polygon
-            points="18,6 28,12 28,24 18,30 8,24 8,12"
-            stroke="#78716c"
-            strokeWidth="1"
-            fill="none"
-          />
-          <path d="M18 6 L18 30 M8 12 L28 24 M28 12 L8 24" stroke="#f59e0b" strokeOpacity="0.45" strokeWidth="1" />
-          <circle cx="18" cy="18" r="3" fill="#f59e0b" />
-        </svg>
+        </div>
         <div>
-          <h1 className="font-display text-2xl md:text-3xl font-bold tracking-wide text-stone-100 leading-none">
+          <h1 className="font-display text-2xl md:text-3xl font-bold tracking-wide text-transparent bg-clip-text bg-gradient-to-r from-amber-300 via-amber-200 to-amber-400 leading-none drop-shadow">
             RPG Ação
           </h1>
           <p className="text-xs text-stone-400 mt-1">
-            Tabuleiro virtual de RPG · Mapas 3D · Dados fisicos · Fichas & Nuvem
+            Tabuleiro virtual de RPG · Mapas 3D · Dados físicos · Fichas & Nuvem
           </p>
         </div>
       </div>
@@ -126,12 +108,21 @@ export const EntryLobby: React.FC<EntryLobbyProps> = ({
         onSubmit={handleSubmit}
         className="relative z-10 w-full max-w-md bg-[#12161e]/95 border border-stone-700/60 rounded-xl p-6 shadow-2xl pointer-events-auto"
       >
-        <h2 className="font-display text-lg font-semibold text-stone-100 mb-1">
-          Entrar na Mesa
-        </h2>
-        <p className="text-xs text-stone-400 mb-4">
-          Mesas novas comecam com tabuleiro limpo para o Mestre esculpir e os jogadores criarem seus personagens.
-        </p>
+        <div className="flex items-center gap-3 mb-3.5 pb-3 border-b border-stone-800">
+          <img
+            src="/logo.png"
+            alt="RPG Logo"
+            className="w-10 h-10 rounded-full object-cover border border-amber-500/60 shadow-[0_0_12px_rgba(245,158,11,0.25)]"
+          />
+          <div>
+            <h2 className="font-display text-lg font-semibold text-stone-100 leading-tight">
+              Entrar na Mesa
+            </h2>
+            <span className="text-[11px] text-stone-400">
+              Escolha seu papel e acesse o tabuleiro 3D
+            </span>
+          </div>
+        </div>
 
         {/* Role Selector */}
         <div className="grid grid-cols-2 gap-2.5 mb-3">
@@ -228,8 +219,8 @@ export const EntryLobby: React.FC<EntryLobbyProps> = ({
         </button>
 
         {/* Cloud DB (Firebase Firestore) Account & Saved Campaigns */}
-        <div className="mt-4 pt-3.5 border-t border-stone-800/80">
-          {firebaseUser ? (
+        {firebaseUser && (
+          <div className="mt-4 pt-3.5 border-t border-stone-800/80">
             <div className="space-y-2">
               <div className="flex items-center justify-between gap-2 text-xs">
                 <div className="flex items-center gap-1.5 text-emerald-300 truncate">
@@ -276,17 +267,8 @@ export const EntryLobby: React.FC<EntryLobbyProps> = ({
                 </div>
               )}
             </div>
-          ) : (
-            <button
-              type="button"
-              onClick={onGoogleSignIn}
-              className="w-full flex items-center justify-center gap-2 py-2 px-3 bg-[#181e29] hover:bg-[#212938] border border-stone-700/80 text-stone-200 text-xs font-medium rounded-lg transition-colors cursor-pointer"
-            >
-              <Cloud className="w-3.5 h-3.5 text-sky-400" />
-              <span>Conectar Conta Google (Salvar Campanhas na Nuvem)</span>
-            </button>
-          )}
-        </div>
+          </div>
+        )}
       </form>
 
       {/* Single Flat Control-Hint Line */}

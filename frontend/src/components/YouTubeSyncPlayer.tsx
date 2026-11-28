@@ -6,6 +6,7 @@ import {
   Pause,
   Play,
   Repeat,
+  SlidersHorizontal,
   Volume2,
   VolumeX,
 } from 'lucide-react';
@@ -127,6 +128,7 @@ export const YouTubeSyncPlayer: React.FC<YouTubeSyncPlayerProps> = ({
     }
   });
   const [localMuted, setLocalMuted] = useState(false);
+  const [volumeOpen, setVolumeOpen] = useState(false);
   const [expanded, setExpanded] = useState(false);
   const [needsGesture, setNeedsGesture] = useState(false);
   const [playerError, setPlayerError] = useState(false);
@@ -373,13 +375,14 @@ export const YouTubeSyncPlayer: React.FC<YouTubeSyncPlayerProps> = ({
           </button>
         )}
 
-        {/* Local Volume Button with Popover on Hover */}
-        <div className="relative group shrink-0">
+        {/* Local volume controls */}
+        <div className="relative flex items-center gap-0.5 shrink-0">
           <button
             type="button"
             onClick={() => setLocalMuted(!localMuted)}
             className="p-1 text-stone-400 hover:text-stone-200 transition-colors cursor-pointer"
             title={`Volume: ${localMuted ? 'Mudo' : `${localVolume}%`}`}
+            aria-label={localMuted ? 'Ativar volume da música' : 'Silenciar música'}
           >
             {localMuted || localVolume === 0 ? (
               <VolumeX className="w-3.5 h-3.5 text-rose-400" />
@@ -387,25 +390,37 @@ export const YouTubeSyncPlayer: React.FC<YouTubeSyncPlayerProps> = ({
               <Volume2 className="w-3.5 h-3.5 text-stone-300" />
             )}
           </button>
+          <button
+            type="button"
+            onClick={() => setVolumeOpen((open) => !open)}
+            className="p-1 text-stone-400 hover:text-stone-200 transition-colors cursor-pointer"
+            title="Ajustar volume da música"
+            aria-label="Ajustar volume da música"
+            aria-expanded={volumeOpen}
+          >
+            <SlidersHorizontal className="w-3 h-3" />
+          </button>
 
-          {/* Floating Volume Flyout */}
-          <div className="absolute top-full left-1/2 -translate-x-1/2 mt-1.5 hidden group-hover:flex items-center gap-2 p-2 bg-[#0c1017] border border-stone-700/90 rounded-xl shadow-2xl z-50 w-36">
-            <input
-              type="range"
-              min="0"
-              max="100"
-              value={localMuted ? 0 : localVolume}
-              onChange={(e) => {
-                const v = Number(e.target.value);
-                setLocalVolume(v);
-                if (v > 0 && localMuted) setLocalMuted(false);
-              }}
-              className="w-full h-1 accent-amber-500 cursor-pointer"
-            />
-            <span className="text-[10px] font-mono text-stone-400 w-6 text-right">
-              {localMuted ? '0%' : `${localVolume}%`}
-            </span>
-          </div>
+          {volumeOpen && (
+            <div className="absolute top-full left-1/2 -translate-x-1/2 mt-1.5 flex items-center gap-2 p-2 bg-[#0c1017] border border-stone-700/90 rounded-xl shadow-2xl z-50 w-40">
+              <input
+                type="range"
+                min="0"
+                max="100"
+                value={localMuted ? 0 : localVolume}
+                aria-label="Volume da música"
+                onChange={(e) => {
+                  const v = Number(e.target.value);
+                  setLocalVolume(v);
+                  if (v > 0 && localMuted) setLocalMuted(false);
+                }}
+                className="w-full h-1 accent-amber-500 cursor-pointer"
+              />
+              <span className="text-[10px] font-mono text-stone-400 w-6 text-right">
+                {localMuted ? '0%' : `${localVolume}%`}
+              </span>
+            </div>
+          )}
         </div>
 
         {/* Gesture unlock prompt if autoplay was blocked */}
