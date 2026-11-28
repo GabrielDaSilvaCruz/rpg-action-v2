@@ -48,6 +48,8 @@ export interface SculptBrush {
   elevation: number;
   prop: PropKind;
   propRotation: number;
+  collisionMode: 'auto' | 'blocked' | 'free';
+  collisionOnly: boolean;
   erase: boolean;
 }
 
@@ -1588,6 +1590,27 @@ export const TabletopViewport: React.FC<TabletopViewportProps> = ({
     const paintCellAt = (gx: number, gz: number) => {
       lastActiveCell = { x: gx, z: gz };
       const { sculptBrush: brush, onPaintTile: emitPaint } = propsRef.current;
+      if (brush.collisionOnly) {
+        const existing = propsRef.current.roomState?.tiles[tileKey(gx, gz)];
+        if (brush.erase) {
+          if (existing) emitPaint({ ...existing, collision: false });
+        } else {
+          emitPaint({
+            ...(existing || {
+              x: gx,
+              z: gz,
+              terrain: 'void',
+              elevation: 0,
+              prop: 'none',
+              propRotation: 0,
+            }),
+            collision: true,
+          });
+        }
+        audioSynth.playTilePlace();
+        return;
+      }
+
       const cell: TileCell = brush.erase
         ? { x: gx, z: gz, terrain: 'void', elevation: 0, prop: 'none', propRotation: 0 }
         : {
@@ -1597,6 +1620,9 @@ export const TabletopViewport: React.FC<TabletopViewportProps> = ({
             elevation: brush.elevation,
             prop: brush.prop,
             propRotation: brush.propRotation,
+            ...(brush.collisionMode === 'auto'
+              ? {}
+              : { collision: brush.collisionMode === 'blocked' }),
           };
       emitPaint(cell);
       audioSynth.playTilePlace();

@@ -40,6 +40,7 @@ export interface TileCell {
   elevation: number; // 0 to 4
   prop: PropKind;
   propRotation: number; // 0, 1, 2, 3 (90 deg steps)
+  collision?: boolean;
 }
 
 export type FootprintSize = 0.5 | 1 | 2 | 3 | 4;
@@ -124,6 +125,7 @@ export interface MiniatureData {
   ownerName: string; // '' = any player, '__GM__' = GM locked, or specific player name
   ownerUid?: string;
   isPropOnly?: boolean;
+  collision?: boolean | null;
   sheet?: CharacterSheet;
   sceneId?: string; // ID do mapa/cenário em que esta miniatura se encontra
 }
@@ -149,6 +151,14 @@ export interface DiceRollEvent {
   modifier: number;
   total: number;
   timestamp: number;
+}
+
+export interface BlockedMovementLogEntry {
+  id: string;
+  timestamp: number;
+  characterName: string;
+  targetX: number;
+  targetZ: number;
 }
 
 export type MapPresetId = 'crypt' | 'tavern' | 'arena' | 'blank' | 'dungeon-gate' | (string & {});
@@ -445,7 +455,7 @@ export type ServerMessage =
   | { type: 'ruler:updated'; payload: { ruler: RulerMeasurement } }
   | { type: 'map:restored'; payload: any }
   | { type: 'room:preset_applied'; payload: any }
-  | { type: 'tile:batch_updated'; payload: { cells: TileCell[] } }
+  | { type: 'tile:batch_updated'; payload: { cells: TileCell[]; sceneId?: string } }
   | { type: 'mini:added'; payload: { mini?: MiniatureData; miniature?: MiniatureData } }
   | { type: 'music:updated'; payload: { music: MusicState | null } }
   | { type: 'music:state'; payload: any }

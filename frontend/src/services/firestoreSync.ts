@@ -192,6 +192,7 @@ export async function saveRoomToFirestore(
         hp: Math.max(0, Math.min(9999, Math.round(Number(mini.hp) || 0))),
         maxHp: Math.max(1, Math.min(9999, Math.round(Number(mini.maxHp) || 30))),
         isPropOnly: Boolean(mini.isPropOnly),
+        collision: typeof mini.collision === 'boolean' ? mini.collision : null,
         sheet: mini.sheet ? sanitizeSheetForFirestore(mini.sheet) : null,
         updatedAt: serverTimestamp(),
       };
@@ -379,6 +380,12 @@ export async function loadRoomFromFirestore(roomIdRaw: string): Promise<{
         ownerName: String(data.ownerName || ''),
         ownerUid: data.ownerUid ? String(data.ownerUid) : undefined,
         isPropOnly: Boolean(data.isPropOnly),
+        collision:
+          typeof data.collision === 'boolean'
+            ? data.collision
+            : data.collision === null
+            ? null
+            : undefined,
         sheet: data.sheet || undefined,
       };
     });

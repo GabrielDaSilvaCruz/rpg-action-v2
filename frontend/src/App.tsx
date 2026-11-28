@@ -8,6 +8,7 @@ import {
   signOutGoogleAccount,
 } from './services/firestoreSync';
 import {
+  BlockedMovementLogEntry,
   CharacterSheet,
   ClientMessage,
   DiceRollEvent,
@@ -18,6 +19,7 @@ import {
   Role,
   RoomState,
   ServerMessage,
+  TerrainKind,
   TileCell,
   tileKey,
   SavedScenario,
@@ -77,6 +79,83 @@ function cloneSnapshot(
   };
 }
 
+const AUTO_BLOCKING_PROPS = new Set<TileCell['prop']>([
+  'wall',
+  'wall_torch',
+  'pillar',
+  'brazier',
+  'chest',
+  'tree',
+  'table',
+  'bookshelf',
+  'barrel',
+  'altar',
+  'throne',
+  'bed',
+  'fireplace',
+  'crystal',
+  'grave',
+  'fountain',
+]);
+
+function canMiniOccupy(
+  state: RoomState,
+  mini: MiniatureData,
+  x: number,
+  z: number
+): boolean {
+  const bounds = getMiniGridBounds(x, z, mini.footprint);
+  const cols = state.cols || 20;
+  const rows = state.rows || 20;
+
+  for (let cellX = bounds.minX; cellX <= bounds.maxX; cellX += 1) {
+    for (let cellZ = bounds.minZ; cellZ <= bounds.maxZ; cellZ += 1) {
+      if (cellX < 0 || cellZ < 0 || cellX >= cols || cellZ >= rows) {
+        return false;
+      }
+
+      const tile = state.tiles[tileKey(cellX, cellZ)];
+      const blocksByDefault = tile ? AUTO_BLOCKING_PROPS.has(tile.prop) : false;
+      if (tile?.collision ?? blocksByDefault) return false;
+      if (
+        Object.values(state.miniatures).some(
+          (obstacle) =>
+            obstacle.id !== mini.id &&
+            obstacle.isPropOnly &&
+            (obstacle.collision ?? hasDefaultMiniCollision(obstacle)) &&
+            miniCoversCell(obstacle, cellX, cellZ)
+        )
+      ) {
+        return false;
+      }
+    }
+  }
+
+  return true;
+}
+
+function getMiniGridBounds(x: number, z: number, footprint: MiniatureData['footprint']) {
+  const halfFootprint = footprint / 2;
+  return {
+    minX: Math.ceil(x - halfFootprint - 1e-6),
+    maxX: Math.floor(x + halfFootprint + 1e-6),
+    minZ: Math.ceil(z - halfFootprint - 1e-6),
+    maxZ: Math.floor(z + halfFootprint + 1e-6),
+  };
+}
+
+function miniCoversCell(mini: MiniatureData, x: number, z: number): boolean {
+  const bounds = getMiniGridBounds(mini.x, mini.z, mini.footprint);
+  return x >= bounds.minX && x <= bounds.maxX && z >= bounds.minZ && z <= bounds.maxZ;
+}
+
+function hasDefaultMiniCollision(mini: MiniatureData): boolean {
+  if (!mini.isPropOnly) return false;
+  return /wall|muro|parede/i.test(
+    `${mini.assetId || ''} ${mini.assetName || ''} ${mini.name}`
+  );
+}
+
 function getInitialRoomFromUrl(): string {
   if (typeof window === 'undefined') return 'MESA-01';
   const params = new URLSearchParams(window.location.search);
@@ -120,9 +199,11 @@ export default function App() {
   const [toolMode, setToolMode] = useState<'interact' | 'sculpt' | 'annotate' | 'measure'>('interact');
   const [sculptBrush, setSculptBrush] = useState<SculptBrush>({
     terrain: 'stone',
-    elevation: 1,
+    elevation: 0,
     prop: 'none',
     propRotation: 0,
+    collisionMode: 'auto',
+    collisionOnly: false,
     erase: false,
   });
   const [annotationBrush, setAnnotationBrush] = useState<AnnotationBrush>({
@@ -137,6 +218,7 @@ export default function App() {
   const [measureSnap, setMeasureSnap] = useState(true);
   const [measureShare, setMeasureShare] = useState(true);
   const [localRuler, setLocalRuler] = useState<RulerLineCoords | null>(null);
+  const [blockedMovementLog, setBlockedMovementLog] = useState<BlockedMovementLogEntry[]>([]);
   const [selectedMiniId, setSelectedMiniId] = useState<string | null>(null);
   const [selectedAnnotationId, setSelectedAnnotationId] = useState<string | null>(null);
   const [hoverInfo, setHoverInfo] = useState<{
@@ -445,14 +527,25 @@ export default function App() {
         case 'tiles': {
           const cells = isUndo ? entry.before : entry.after;
           if (cells.length === 0) return;
+          const sceneId = viewSceneIdRef.current;
           setRoomState((prev) => {
             const nextTiles = { ...prev.tiles };
+            const scenes = { ...(prev.scenes || effectiveScenes) };
+            const sceneTiles = { ...(scenes[sceneId]?.tiles || {}) };
             for (const c of cells) {
               nextTiles[tileKey(c.x, c.z)] = c;
+              sceneTiles[tileKey(c.x, c.z)] = c;
             }
-            return { ...prev, tiles: nextTiles };
+            if (scenes[sceneId]) {
+              scenes[sceneId] = { ...scenes[sceneId], tiles: sceneTiles };
+            }
+            return {
+              ...prev,
+              ...(!prev.scenes || sceneId === prev.activeSceneId ? { tiles: nextTiles } : {}),
+              scenes,
+            };
           });
-          sendWs({ type: 'tile:batch', payload: { cells } });
+          sendWs({ type: 'tile:batch', payload: { cells, sceneId } });
           break;
         }
 
@@ -580,7 +673,7 @@ export default function App() {
         }
       }
     },
-    [sendWs]
+    [effectiveScenes, sendWs]
   );
 
   const handleUndo = useCallback(() => {
@@ -833,32 +926,41 @@ export default function App() {
             break;
 
           case 'tile:updated':
+          case 'tile:batch_updated': {
             setRoomState((prev) => {
               const nextTiles = { ...prev.tiles };
-              if ((msg.payload as any).cell) {
-                const c = (msg.payload as any).cell;
-                nextTiles[tileKey(c.x, c.z)] = c;
-              }
-              if (Array.isArray(msg.payload.cells)) {
-                for (const cell of msg.payload.cells) {
-                  nextTiles[tileKey(cell.x, cell.z)] = cell;
-                }
-              }
-              return { ...prev, tiles: nextTiles };
-            });
-            break;
+              const cells =
+                msg.payload.cells ||
+                ('cell' in msg.payload && msg.payload.cell ? [msg.payload.cell] : []);
+              const sceneId = msg.payload.sceneId || prev.activeSceneId || 'scene-default';
+              const nextSceneTiles = prev.scenes?.[sceneId]
+                ? { ...prev.scenes[sceneId].tiles }
+                : null;
 
-          case 'tile:batch_updated':
-            setRoomState((prev) => {
-              const nextTiles = { ...prev.tiles };
-              if (Array.isArray(msg.payload.cells)) {
-                for (const cell of msg.payload.cells) {
+              for (const cell of cells) {
+                if (!msg.payload.sceneId || sceneId === prev.activeSceneId || !prev.scenes) {
                   nextTiles[tileKey(cell.x, cell.z)] = cell;
                 }
+                if (nextSceneTiles) {
+                  nextSceneTiles[tileKey(cell.x, cell.z)] = cell;
+                }
               }
-              return { ...prev, tiles: nextTiles };
+
+              return {
+                ...prev,
+                tiles: nextTiles,
+                ...(nextSceneTiles
+                  ? {
+                      scenes: {
+                        ...prev.scenes,
+                        [sceneId]: { ...prev.scenes[sceneId], tiles: nextSceneTiles },
+                      },
+                    }
+                  : {}),
+              };
             });
             break;
+          }
 
           case 'mini:created':
           case 'mini:added': {
@@ -1146,7 +1248,8 @@ export default function App() {
         prevCell.terrain === cell.terrain &&
         prevCell.elevation === cell.elevation &&
         prevCell.prop === cell.prop &&
-        prevCell.propRotation === cell.propRotation
+        prevCell.propRotation === cell.propRotation &&
+        prevCell.collision === cell.collision
       ) {
         return;
       }
@@ -1189,6 +1292,76 @@ export default function App() {
     [effectiveScenes, recordHistory, sendWs]
   );
 
+  const handleFillBoard = useCallback(
+    (terrain: TerrainKind) => {
+      if (role !== 'gm') return;
+
+      const current = sceneFilteredRoomState;
+      const cells: TileCell[] = [];
+      const before: TileCell[] = [];
+      for (let x = 0; x < current.cols; x++) {
+        for (let z = 0; z < current.rows; z++) {
+          const previous = current.tiles[tileKey(x, z)] || {
+            x,
+            z,
+            terrain: 'void' as const,
+            elevation: 0,
+            prop: 'none' as const,
+            propRotation: 0,
+          };
+          if (previous.terrain === terrain) continue;
+          before.push({ ...previous });
+          cells.push({ ...previous, terrain });
+        }
+      }
+
+      if (cells.length === 0) return;
+
+      const terrainLabels: Record<TerrainKind, string> = {
+        void: 'vazio',
+        stone: 'pedra',
+        grass: 'grama',
+        wood: 'madeira',
+        cobble: 'lajota',
+        water: 'água',
+        lava: 'lava',
+      };
+      if (
+        !window.confirm(
+          `Preencher todas as ${current.cols * current.rows} casas com ${terrainLabels[terrain]}? Elevações e objetos serão mantidos.`
+        )
+      ) {
+        return;
+      }
+
+      const sceneId = viewSceneIdRef.current;
+      const filledTiles = { ...current.tiles };
+      cells.forEach((cell) => {
+        filledTiles[tileKey(cell.x, cell.z)] = cell;
+      });
+      recordHistory({
+        kind: 'tiles',
+        label: `Preencher tabuleiro com ${terrainLabels[terrain]}`,
+        before,
+        after: cells,
+      });
+      setRoomState((prev) => {
+        const scenes = { ...(prev.scenes || effectiveScenes) };
+        if (scenes[sceneId]) {
+          scenes[sceneId] = { ...scenes[sceneId], tiles: filledTiles };
+        }
+        const updateRootTiles = !prev.scenes || sceneId === prev.activeSceneId;
+        return {
+          ...prev,
+          ...(updateRootTiles ? { tiles: { ...prev.tiles, ...filledTiles } } : {}),
+          scenes,
+        };
+      });
+      sendWs({ type: 'tile:batch', payload: { cells, sceneId } });
+    },
+    [role, sceneFilteredRoomState, effectiveScenes, recordHistory, sendWs]
+  );
+
   const handleMoveMini = useCallback(
     (id: string, x: number, z: number, rotationY?: number) => {
       const existing = roomStateRef.current.miniatures[id];
@@ -1201,6 +1374,35 @@ export default function App() {
         ) {
           return;
         }
+      }
+
+      if (
+        !existing.isPropOnly &&
+        (existing.x !== x || existing.z !== z) &&
+        !canMiniOccupy(sceneFilteredRoomState, existing, x, z)
+      ) {
+        const now = Date.now();
+        const entry: BlockedMovementLogEntry = {
+          id: crypto.randomUUID(),
+          timestamp: now,
+          characterName: existing.name,
+          targetX: x,
+          targetZ: z,
+        };
+        setBlockedMovementLog((previous) => {
+          const latest = previous[0];
+          if (
+            latest &&
+            latest.characterName === entry.characterName &&
+            latest.targetX === entry.targetX &&
+            latest.targetZ === entry.targetZ &&
+            now - latest.timestamp < 1500
+          ) {
+            return previous;
+          }
+          return [entry, ...previous].slice(0, 50);
+        });
+        return;
       }
 
       const miniSceneId = existing.sceneId || viewSceneIdRef.current;
@@ -1258,7 +1460,7 @@ export default function App() {
         handleTriggerPortal(portal, id);
       }
     },
-    [role, userName, recordHistory, sendWs]
+    [role, userName, recordHistory, sendWs, sceneFilteredRoomState, showError]
   );
 
   const handleCreateMini = useCallback(
@@ -2346,6 +2548,7 @@ export default function App() {
           hoverInfo={hoverInfo}
           muted={muted}
           errorToast={errorToast}
+          blockedMovementLog={blockedMovementLog}
           canUndo={undoStack.length > 0}
           canRedo={redoStack.length > 0}
           undoLabel={undoStack[undoStack.length - 1]?.label}
@@ -2369,6 +2572,7 @@ export default function App() {
           onDeleteAnnotation={handleDeleteAnnotation}
           onChangePreset={handleChangePreset}
           onResizeBoard={handleResizeBoard}
+          onFillBoard={handleFillBoard}
           onRollDice={handleRollDice}
           onCameraPreset={(preset) =>
             setCameraCommand((prev) => ({ preset, seq: (prev?.seq || 0) + 1 }))

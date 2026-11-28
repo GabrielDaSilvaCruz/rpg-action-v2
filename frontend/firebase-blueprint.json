@@ -116,6 +116,7 @@
         "hp": { "type": "integer" },
         "maxHp": { "type": "integer" },
         "isPropOnly": { "type": "boolean" },
+        "collision": { "type": ["boolean", "null"] },
         "sheet": { "type": "object" },
         "updatedAt": { "type": "string", "format": "date-time" }
       },

@@ -59,6 +59,7 @@ import {
   X,
 } from 'lucide-react';
 import {
+  BlockedMovementLogEntry,
   AnnotationKind,
   BaseStyle,
   DiceRollEvent,
@@ -136,6 +137,7 @@ interface TabletopHUDProps {
   hoverInfo: { x: number; z: number; distanceCells: number | null } | null;
   muted: boolean;
   errorToast: string | null;
+  blockedMovementLog: BlockedMovementLogEntry[];
   canUndo: boolean;
   canRedo: boolean;
   undoLabel?: string;
@@ -159,6 +161,7 @@ interface TabletopHUDProps {
   onDeleteAnnotation: (id: string) => void;
   onChangePreset: (preset: MapPresetId) => void;
   onResizeBoard: (cols: number, rows: number) => void;
+  onFillBoard: (terrain: TerrainKind) => void;
   onRollDice: (die: number, modifier?: number) => void;
   onCameraPreset: (preset: CameraPreset) => void;
   onToggleMute: () => void;
@@ -305,6 +308,7 @@ export const TabletopHUD: React.FC<TabletopHUDProps> = ({
   hoverInfo,
   muted,
   errorToast,
+  blockedMovementLog,
   canUndo,
   canRedo,
   undoLabel,
@@ -328,6 +332,7 @@ export const TabletopHUD: React.FC<TabletopHUDProps> = ({
   onDeleteAnnotation,
   onChangePreset,
   onResizeBoard,
+  onFillBoard,
   onRollDice,
   onCameraPreset,
   onToggleMute,
@@ -1588,7 +1593,7 @@ export const TabletopHUD: React.FC<TabletopHUDProps> = ({
               <button
                 type="button"
                 onClick={() => setShowDiceLog((prev) => !prev)}
-                title="Histórico de rolagens de dados"
+                title="Log da mesa: rolagens e movimentos bloqueados"
                 className={`ml-1 flex items-center gap-1 px-2 py-1 text-xs rounded-lg transition-colors cursor-pointer border ${
                   showDiceLog
                     ? 'bg-amber-500/30 border-amber-400 text-amber-300 font-bold'
@@ -1597,7 +1602,9 @@ export const TabletopHUD: React.FC<TabletopHUDProps> = ({
               >
                 <ScrollText className="w-3.5 h-3.5 text-amber-400" />
                 <span className="hidden sm:inline">Log</span>
-                <span className="font-mono text-[10px] text-stone-400">({roomState?.recentRolls?.length || 0})</span>
+                <span className="font-mono text-[10px] text-stone-400">
+                  ({(roomState?.recentRolls?.length || 0) + blockedMovementLog.length})
+                </span>
               </button>
             </div>
 
@@ -1679,10 +1686,10 @@ export const TabletopHUD: React.FC<TabletopHUDProps> = ({
             <div className="flex items-center gap-2">
               <ScrollText className="w-4 h-4 text-amber-400" />
               <span className="font-display text-xs font-bold text-stone-200">
-                Histórico de Rolagens
+                Log da Mesa
               </span>
               <span className="font-mono text-[11px] text-stone-400 px-1.5 py-0.5 bg-[#161c28] rounded border border-stone-800">
-                {roomState?.recentRolls?.length || 0}
+                {(roomState?.recentRolls?.length || 0) + blockedMovementLog.length}
               </span>
             </div>
             <button
@@ -1695,15 +1702,44 @@ export const TabletopHUD: React.FC<TabletopHUDProps> = ({
             </button>
           </div>
 
-          {/* Roll List */}
+          {/* Table activity log */}
           <div className="flex-1 overflow-y-auto p-2.5 space-y-1.5 scrollbar-thin">
-            {!roomState?.recentRolls || roomState.recentRolls.length === 0 ? (
-              <div className="py-8 text-center text-xs text-stone-500">
-                <Dices className="w-6 h-6 mx-auto mb-2 text-stone-600 opacity-60" />
-                <p>Nenhuma rolagem feita ainda nesta sessão.</p>
-                <p className="text-[11px] text-stone-600 mt-1">Use o botão de d20 no topo ou na ficha.</p>
-              </div>
-            ) : (
+            {blockedMovementLog.length > 0 && (
+              <>
+                <div className="px-1 pt-1 text-[10px] font-semibold uppercase tracking-wide text-rose-300">
+                  Movimentos bloqueados
+                </div>
+                {blockedMovementLog.map((entry) => (
+                  <div
+                    key={entry.id}
+                    className="rounded-xl border border-rose-500/25 bg-rose-950/20 p-2"
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="flex min-w-0 items-center gap-1.5 text-xs font-semibold text-stone-200">
+                        <Shield className="h-3.5 w-3.5 shrink-0 text-rose-300" />
+                        <span className="truncate">{entry.characterName}</span>
+                      </span>
+                      <span className="shrink-0 text-[10px] font-mono text-stone-500">
+                        {new Date(entry.timestamp).toLocaleTimeString([], {
+                          hour: '2-digit',
+                          minute: '2-digit',
+                          second: '2-digit',
+                        })}
+                      </span>
+                    </div>
+                    <div className="mt-1 text-[11px] text-rose-200/80">
+                      Movimento bloqueado em ({entry.targetX}, {entry.targetZ})
+                    </div>
+                  </div>
+                ))}
+                {roomState?.recentRolls?.length ? (
+                  <div className="px-1 pt-2 text-[10px] font-semibold uppercase tracking-wide text-amber-300">
+                    Rolagens
+                  </div>
+                ) : null}
+              </>
+            )}
+            {roomState?.recentRolls?.length ? (
               roomState.recentRolls.map((r, i) => {
                 const isCritSuccess = r.die === 20 && r.result === 20;
                 const isCritFail = r.die === 20 && r.result === 1;
@@ -1774,7 +1810,13 @@ export const TabletopHUD: React.FC<TabletopHUDProps> = ({
                   </div>
                 );
               })
-            )}
+            ) : blockedMovementLog.length === 0 ? (
+              <div className="py-8 text-center text-xs text-stone-500">
+                <Dices className="w-6 h-6 mx-auto mb-2 text-stone-600 opacity-60" />
+                <p>Nenhuma rolagem ou movimento bloqueado nesta sessão.</p>
+                <p className="text-[11px] text-stone-600 mt-1">Use o botão de d20 no topo ou na ficha.</p>
+              </div>
+            ) : null}
           </div>
         </div>
       )}
@@ -2261,6 +2303,14 @@ export const TabletopHUD: React.FC<TabletopHUDProps> = ({
                       ))}
                       <button
                         type="button"
+                        onClick={() => onFillBoard(sculptBrush.terrain)}
+                        title={`Preencher todo o tabuleiro com ${TERRAINS.find((t) => t.id === sculptBrush.terrain)?.label || sculptBrush.terrain}`}
+                        className="flex items-center gap-1.5 rounded-lg border border-amber-500/60 bg-amber-600/20 px-2.5 py-1.5 text-xs font-medium text-amber-200 transition-colors hover:bg-amber-600/35 cursor-pointer"
+                      >
+                        <span>Preencher todo o chão</span>
+                      </button>
+                      <button
+                        type="button"
                         onClick={() => {
                           onSetToolMode('sculpt');
                           onSetSculptBrush({ ...sculptBrush, erase: !sculptBrush.erase });
@@ -2332,6 +2382,49 @@ export const TabletopHUD: React.FC<TabletopHUDProps> = ({
                           </button>
                         ))}
                       </div>
+
+                      <label className="flex items-center gap-1.5 rounded-lg border border-stone-700/70 bg-[#181d27] px-2 py-1 text-xs text-stone-300">
+                        Colisão
+                        <select
+                          value={sculptBrush.collisionMode}
+                          onChange={(e) => {
+                            const mode = e.target.value;
+                            if (mode === 'auto' || mode === 'blocked' || mode === 'free') {
+                              onSetToolMode('sculpt');
+                              onSetSculptBrush({ ...sculptBrush, collisionMode: mode });
+                            }
+                          }}
+                          className="rounded border border-stone-700 bg-[#0b0e14] px-1.5 py-1 text-stone-100"
+                          aria-label="Comportamento de colisão das casas pintadas"
+                          title="Aplica a configuração de colisão ao pintar casas"
+                        >
+                          <option value="auto">Automática (muros bloqueiam)</option>
+                          <option value="blocked">Bloquear passagem</option>
+                          <option value="free">Permitir passagem</option>
+                        </select>
+                      </label>
+
+                      <button
+                        type="button"
+                        onClick={() => {
+                          onSetToolMode('sculpt');
+                          onSetSculptBrush({
+                            ...sculptBrush,
+                            collisionOnly: !sculptBrush.collisionOnly,
+                            erase: false,
+                          });
+                        }}
+                        title="Pinte no tabuleiro para criar um bloco invisível que bloqueia personagens. Use Apagar para remover a colisão."
+                        aria-pressed={sculptBrush.collisionOnly}
+                        className={`flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-xs transition-colors cursor-pointer ${
+                          sculptBrush.collisionOnly
+                            ? 'border-rose-500 bg-rose-950/60 text-rose-200'
+                            : 'border-stone-700/70 bg-[#181d27] text-stone-300 hover:border-stone-500'
+                        }`}
+                      >
+                        <Shield className="h-3.5 w-3.5" />
+                        <span>Bloco invisível de colisão</span>
+                      </button>
 
                       <button
                         type="button"
@@ -3029,6 +3122,38 @@ export const TabletopHUD: React.FC<TabletopHUDProps> = ({
                             <span className="px-2 py-1 text-[11px] font-medium bg-sky-950/60 border border-sky-500/40 rounded text-sky-200">
                               Tazo 3D
                             </span>
+                          )}
+
+                          {selectedMini.isPropOnly && (
+                            <label className="flex items-center gap-1.5 text-xs text-stone-300">
+                              Colisão 3D
+                              <select
+                                value={
+                                  selectedMini.collision === undefined ||
+                                  selectedMini.collision === null
+                                    ? 'auto'
+                                    : selectedMini.collision
+                                    ? 'blocked'
+                                    : 'free'
+                                }
+                                onChange={(e) => {
+                                  const mode = e.target.value;
+                                  if (mode === 'auto') {
+                                    onUpdateMini(selectedMini.id, { collision: null });
+                                  } else if (mode === 'blocked') {
+                                    onUpdateMini(selectedMini.id, { collision: true });
+                                  } else if (mode === 'free') {
+                                    onUpdateMini(selectedMini.id, { collision: false });
+                                  }
+                                }}
+                                title="A colisão usa o tamanho da peça; paredes bloqueiam no modo automático."
+                                className="px-2 py-1 text-xs bg-[#181d27] border border-stone-700 rounded-lg text-stone-200"
+                              >
+                                <option value="auto">Automática (muros bloqueiam)</option>
+                                <option value="blocked">Bloquear passagem</option>
+                                <option value="free">Permitir passagem</option>
+                              </select>
+                            </label>
                           )}
 
                           {!selectedMini.isPropOnly && selectedMini.format !== 'image' && (
